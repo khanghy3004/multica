@@ -289,12 +289,16 @@ type (
 	PendingLocalSkillImport = protocol.DaemonHeartbeatPendingLocalSkillImport
 )
 
-func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string) (*HeartbeatResponse, error) {
+func (c *Client) SendHeartbeat(ctx context.Context, runtimeID string, report *protocol.DaemonHeartbeatSubagentReport) (*HeartbeatResponse, error) {
+	body := map[string]any{
+		"runtime_id":            runtimeID,
+		"supports_batch_import": true,
+	}
+	if report != nil {
+		body["subagent_report"] = report
+	}
 	var resp HeartbeatResponse
-	if err := c.postJSON(ctx, "/api/daemon/heartbeat", map[string]any{
-		"runtime_id":             runtimeID,
-		"supports_batch_import":  true,
-	}, &resp); err != nil {
+	if err := c.postJSON(ctx, "/api/daemon/heartbeat", body, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil
