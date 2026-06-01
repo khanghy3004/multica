@@ -124,8 +124,8 @@ func buildUpsertParams(rt db.AgentRuntime, row protocol.DaemonHeartbeatSubagentR
 	return db.UpsertSyncedSubagentParams{
 		WorkspaceID:        rt.WorkspaceID,
 		RuntimeID:          rt.ID,
-		Name:               row.Name,
-		Description:        row.Description,
+		Name:               truncate(row.Name, 255),
+		Description:        truncate(row.Description, 255),
 		Instructions:       row.Body,
 		RuntimeMode:        rt.RuntimeMode,
 		RuntimeConfig:      []byte("{}"),
@@ -189,4 +189,21 @@ func logSubagentReconcileError(runtimeID string, err error) {
 		return
 	}
 	slog.Warn("subagent reconcile failed", "runtime_id", runtimeID, "err", err)
+}
+
+// truncate clips a string to <max> runes. Used to defensively cap the
+// daemon-reported name/description before they hit the agent_*_length
+// check constraints. Claude Code subagent frontmatter routinely carries
+// descriptions well past 255 chars (the schema's existing cap for
+// human-typed multica agents) — silently truncating beats refusing to
+// import the row at all.
+func truncate(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }

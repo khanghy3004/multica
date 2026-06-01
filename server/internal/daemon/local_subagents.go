@@ -109,7 +109,20 @@ func parseLocalSubagent(path string) (LocalSubagent, error) {
 
 	raw := map[string]any{}
 	if err := yaml.Unmarshal(fmBytes, &raw); err != nil {
-		return LocalSubagent{}, fmt.Errorf("yaml: %w", err)
+		// Real-world Claude Code subagent files routinely have unquoted
+		// `description:` values that contain colons (e.g. "Triggers on:
+		// 'run X'") which violate YAML's mapping-value-after-key rule
+		// and trip yaml.v3. Fall back to a line-based key/value parser
+		// that splits on the first ":" of each top-level line. The
+		// fallback only recovers scalar fields — list-valued fields like
+		// `tools` are recovered when they sit on a single line in JSON
+		// flow form (`tools: ["Read", "Edit"]`) but ignored when split
+		// across multiple lines. This matches what we see in practice;
+		// the alternative (refusing to import) is worse for the user.
+		raw = parseFrontmatterLineFallback(fmBytes)
+		if len(raw) == 0 {
+			return LocalSubagent{}, fmt.Errorf("yaml: %w", err)
+		}
 	}
 
 	slug := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
@@ -169,15 +182,71 @@ func readAllFromReader(r *bufio.Reader) ([]byte, error) {
 }
 
 func anyToStringSlice(v any) []string {
-	arr, ok := v.([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(arr))
-	for _, x := range arr {
-		if s, ok := x.(string); ok {
-			out = append(out, s)
+	if arr, ok := v.([]any); ok {
+		out := make([]string, 0, len(arr))
+		for _, x := range arr {
+			if s, ok := x.(string); ok {
+				out = append(out, s)
+			}
 		}
+		return out
+	}
+	if s, ok := v.(string); ok {
+		// Fallback path stores `tools` as a raw string (e.g.
+		// `["Read", "Edit"]` or `[Read, Edit]`). Best-effort JSON
+		// decode; if that fails, split on commas after stripping
+		// brackets.
+		s = strings.TrimSpace(s)
+		s = strings.TrimPrefix(s, "[")
+		s = strings.TrimSuffix(s, "]")
+		out := []string{}
+		for _, part := range strings.Split(s, ",") {
+			part = strings.TrimSpace(part)
+			part = strings.Trim(part, "\"'")
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	}
+	return nil
+}
+
+// parseFrontmatterLineFallback recovers key/value pairs from a YAML block
+// that yaml.Unmarshal rejected. Splits on the first ":" of each line,
+// trims whitespace, and stores everything as raw strings. Lines that
+// don't contain ":" are appended to the previous key's value (best-effort
+// continuation handling). The caller's switch statement coerces values
+// per key.
+func parseFrontmatterLineFallback(data []byte) map[string]any {
+	out := map[string]any{}
+	var lastKey string
+	for _, line := range strings.Split(string(data), "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		idx := strings.Index(line, ":")
+		// Treat as a continuation only when this line is INDENTED
+		// (i.e. starts with whitespace) — top-level lines whose value
+		// happens to contain a colon (e.g. `Triggers on:` in the
+		// middle of a description) still have idx > 0 but should
+		// remain key lines.
+		isContinuation := idx < 0 || (len(line) > 0 && (line[0] == ' ' || line[0] == '\t'))
+		if isContinuation {
+			if lastKey == "" {
+				continue
+			}
+			if cur, ok := out[lastKey].(string); ok {
+				out[lastKey] = cur + " " + trimmed
+			}
+			continue
+		}
+		key := strings.TrimSpace(line[:idx])
+		value := strings.TrimSpace(line[idx+1:])
+		value = strings.Trim(value, "\"")
+		out[key] = value
+		lastKey = key
 	}
 	return out
 }
