@@ -63,12 +63,32 @@ func (h *Handler) reconcileSubagents(
 		current, ok := byPath[row.Path]
 		switch {
 		case !ok:
-			// New file → insert.
-			if _, err := h.Queries.UpsertSyncedSubagent(ctx, buildUpsertParams(rt, row, sourceKind, fileMtime)); err != nil {
+			// New file → insert. After insert, pin source_mtime to the
+			// row's updated_at so the next heartbeat does NOT see
+			// updated_at > source_mtime and fire a spurious push that
+			// would overwrite the on-disk file with whatever the row
+			// happens to hold. Only a genuine UI edit (which advances
+			// updated_at past source_mtime later) should ever trigger
+			// the push path.
+			inserted, err := h.Queries.UpsertSyncedSubagent(ctx, buildUpsertParams(rt, row, sourceKind, fileMtime))
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := h.Queries.UpdateSubagentSyncMtime(ctx, db.UpdateSubagentSyncMtimeParams{
+				ID:          inserted.ID,
+				SourceMtime: inserted.UpdatedAt,
+			}); err != nil {
 				return nil, nil, err
 			}
 		case fileWins(fileMtime, current):
-			if _, err := h.Queries.UpsertSyncedSubagent(ctx, buildUpsertParams(rt, row, sourceKind, fileMtime)); err != nil {
+			updated, err := h.Queries.UpsertSyncedSubagent(ctx, buildUpsertParams(rt, row, sourceKind, fileMtime))
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := h.Queries.UpdateSubagentSyncMtime(ctx, db.UpdateSubagentSyncMtimeParams{
+				ID:          updated.ID,
+				SourceMtime: updated.UpdatedAt,
+			}); err != nil {
 				return nil, nil, err
 			}
 		case dbWins(current):
@@ -113,11 +133,17 @@ func dbWins(row db.Agent) bool {
 }
 
 func buildUpsertParams(rt db.AgentRuntime, row protocol.DaemonHeartbeatSubagentRow, sourceKind string, mtime time.Time) db.UpsertSyncedSubagentParams {
-	// custom_args is stored as JSONB. Mirror existing agent columns by
-	// JSON-encoding the tool list; empty list → JSON null.
+	// custom_args is stored as JSONB array of literal CLI args (the
+	// daemon appends each element verbatim to the `claude` invocation).
+	// Convert the frontmatter's `tools: [Read, Edit, ...]` list into a
+	// single `--allowed-tools=<csv>` flag so Claude Code actually
+	// enforces the whitelist — without this step the raw list elements
+	// hit the CLI as positional args and get ignored, leaving the
+	// agent with default-everything-allowed.
 	var argsJSON []byte
 	if len(row.Tools) > 0 {
-		argsJSON, _ = json.Marshal(row.Tools)
+		flag := "--allowed-tools=" + strings.Join(row.Tools, ",")
+		argsJSON, _ = json.Marshal([]string{flag})
 	} else {
 		argsJSON = []byte("null")
 	}
@@ -143,7 +169,20 @@ func buildUpsertParams(rt db.AgentRuntime, row protocol.DaemonHeartbeatSubagentR
 func pendingWriteFromAgent(a db.Agent) protocol.DaemonHeartbeatPendingSubagentWrite {
 	var tools []string
 	if len(a.CustomArgs) > 0 && string(a.CustomArgs) != "null" {
-		_ = json.Unmarshal(a.CustomArgs, &tools)
+		var args []string
+		if err := json.Unmarshal(a.CustomArgs, &args); err == nil {
+			for _, arg := range args {
+				if strings.HasPrefix(arg, "--allowed-tools=") {
+					csv := strings.TrimPrefix(arg, "--allowed-tools=")
+					for _, t := range strings.Split(csv, ",") {
+						t = strings.TrimSpace(t)
+						if t != "" {
+							tools = append(tools, t)
+						}
+					}
+				}
+			}
+		}
 	}
 	return protocol.DaemonHeartbeatPendingSubagentWrite{
 		ID:          uuidToString(a.ID),
