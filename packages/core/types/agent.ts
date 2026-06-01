@@ -212,6 +212,26 @@ export interface Agent {
   updated_at: string;
   archived_at: string | null;
   archived_by: string | null;
+  /**
+   * Absolute filesystem path on the daemon machine when the agent
+   * mirrors an on-disk subagent file (e.g.
+   * `~/.claude/agents/<slug>.md`). Undefined for pure Multica-managed
+   * agents and on older backends that predate MUL-2900. Treat
+   * undefined as "not synced".
+   */
+  source_path?: string;
+  /**
+   * Discriminator for the source file kind. Only `"claude_subagent"`
+   * ships in v1. Older backends omit the field.
+   */
+  source_kind?: "claude_subagent";
+  /**
+   * ISO timestamp of the file's mtime at the last successful sync.
+   * Surfaced by the UI as a "last sync" hint; never consulted for
+   * conflict resolution on the client (that lives on the daemon /
+   * server reconciler).
+   */
+  source_mtime?: string;
 }
 
 /**

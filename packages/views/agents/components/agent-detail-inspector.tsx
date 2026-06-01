@@ -322,7 +322,11 @@ function NameAndDescription({
   onUpdate: (data: Record<string, unknown>) => Promise<void>;
 }) {
   const { t } = useT("agents");
-  if (!canEdit) {
+  // Synced subagents (mirrored from ~/.claude/agents/<slug>.md) treat the
+  // filename as the canonical identifier — renaming the agent would
+  // desync the file. Force read-only display in that case, even when
+  // canEdit is true.
+  if (!canEdit || agent.source_path) {
     return (
       <div className="flex flex-col gap-1">
         <span className="text-base font-semibold leading-tight">
