@@ -784,7 +784,8 @@ function ActiveToolbarRow({
           }`}
           title="Show only agents synced from ~/.claude/agents"
         >
-          Claude Code subagents
+          {/* eslint-disable-next-line i18next/no-literal-string */}
+          {"Claude Code subagents"}
         </button>
         <RuntimeMachineFilterDropdown
           machines={machines}

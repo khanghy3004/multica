@@ -387,7 +387,8 @@ function DetailHeader({
               className="inline-flex shrink-0 items-center rounded-md border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
               title={agent.source_path}
             >
-              Synced from ~/.claude/agents/{subagentFilename(agent.source_path)}
+              {/* eslint-disable-next-line i18next/no-literal-string */}
+              {`Synced from ~/.claude/agents/${subagentFilename(agent.source_path)}`}
             </span>
           )}
           {!isArchived && av && presence && (
