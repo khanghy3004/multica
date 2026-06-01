@@ -655,6 +655,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/local-skills/{requestId}", h.GetLocalSkillListRequest)
 					r.Post("/local-skills/import", h.InitiateImportLocalSkill)
 					r.Get("/local-skills/import/{requestId}", h.GetLocalSkillImportRequest)
+					r.Post("/subagents/sync", h.PostRuntimeSubagentsSync)
 					r.Delete("/", h.DeleteAgentRuntime)
 					// Cascade variant of DELETE: archive every active agent
 					// bound to this runtime, cancel their tasks, then delete
