@@ -93,6 +93,20 @@ func (h *Handler) reconcileSubagents(
 			}
 		case dbWins(current):
 			writes = append(writes, pendingWriteFromAgent(current))
+			// Pin source_mtime to the current updated_at so the next
+			// heartbeat does NOT re-emit the same push. Without this,
+			// updated_at > source_mtime stays permanently true (the
+			// daemon writes the file with mtime = updated_at.Unix(),
+			// losing microsecond precision, so the file mtime can
+			// never catch up to updated_at on its own) and the push
+			// branch fires forever — wasted bandwidth, repeated disk
+			// writes, and a never-true `in_sync` invariant.
+			if err := h.Queries.UpdateSubagentSyncMtime(ctx, db.UpdateSubagentSyncMtimeParams{
+				ID:          current.ID,
+				SourceMtime: current.UpdatedAt,
+			}); err != nil {
+				return nil, nil, err
+			}
 		default:
 			// Equal → no-op.
 		}
