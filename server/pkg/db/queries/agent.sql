@@ -681,3 +681,55 @@ SET status = CASE WHEN EXISTS (
     updated_at = now()
 WHERE a.id = $1
 RETURNING *;
+
+-- name: UpsertSyncedSubagent :one
+-- Reconciler entry for a `~/.claude/agents/<slug>.md` file the daemon
+-- reported. Keyed on (runtime_id, source_path) — the partial unique
+-- index added in migration 111 makes the ON CONFLICT target valid.
+-- archived_at is reset on re-appearance so deleting + re-adding a file
+-- un-archives the row instead of leaving an orphan.
+INSERT INTO agent (
+    workspace_id, runtime_id, name, description, instructions,
+    runtime_mode, runtime_config, visibility, max_concurrent_tasks,
+    owner_id, model, custom_args,
+    source_path, source_mtime, source_kind
+) VALUES (
+    $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15
+)
+ON CONFLICT (runtime_id, source_path) WHERE source_path IS NOT NULL
+DO UPDATE SET
+    name         = EXCLUDED.name,
+    description  = EXCLUDED.description,
+    instructions = EXCLUDED.instructions,
+    model        = EXCLUDED.model,
+    custom_args  = EXCLUDED.custom_args,
+    source_mtime = EXCLUDED.source_mtime,
+    archived_at  = NULL,
+    archived_by  = NULL,
+    updated_at   = now()
+RETURNING *;
+
+-- name: ListSyncedSubagentsByRuntime :many
+-- All non-archived synced subagents for a runtime. Used by the reconciler
+-- to compute the "row exists in DB but file disappeared" delta.
+SELECT * FROM agent
+WHERE runtime_id = $1
+  AND source_path IS NOT NULL
+  AND source_kind = $2
+  AND archived_at IS NULL;
+
+-- name: ArchiveOrphanSubagent :one
+-- Archives a synced agent whose backing file vanished. Distinct from
+-- ArchiveAgent because we want the guard "only if still synced and not
+-- yet archived" so a concurrent UI archive cannot double-archive.
+UPDATE agent
+SET archived_at = now(), archived_by = $2, updated_at = now()
+WHERE id = $1
+  AND source_path IS NOT NULL
+  AND archived_at IS NULL
+RETURNING *;
+
+-- name: UpdateSubagentSyncMtime :exec
+-- Pinned post-push-write so the next heartbeat sees source_mtime equal
+-- to the file's new mtime and does not re-trigger the push.
+UPDATE agent SET source_mtime = $2 WHERE id = $1;

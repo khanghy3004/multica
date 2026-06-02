@@ -116,8 +116,9 @@ type ChatSessionUpdatedPayload struct {
 // Mirrors the body of POST /api/daemon/heartbeat so both transports share
 // identical semantics.
 type DaemonHeartbeatRequestPayload struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	RuntimeID           string                         `json:"runtime_id"`
+	SupportsBatchImport bool                           `json:"supports_batch_import,omitempty"`
+	SubagentReport      *DaemonHeartbeatSubagentReport `json:"subagent_report,omitempty"`
 }
 
 // DaemonHeartbeatAckPayload is the server's reply to DaemonHeartbeatRequestPayload.
@@ -143,6 +144,14 @@ type DaemonHeartbeatAckPayload struct {
 	// that don't know this field silently ignore it (standard JSON behavior)
 	// and fall back to the singular PendingLocalSkillImport above.
 	PendingLocalSkillImports []DaemonHeartbeatPendingLocalSkillImport `json:"pending_local_skill_imports,omitempty"`
+
+	// PendingSubagentWrites tells the daemon to overwrite specific
+	// ~/.claude/agents/<slug>.md files with server-authoritative content.
+	// Used by the DB-newer-than-file branch of the subagent reconciler.
+	PendingSubagentWrites []DaemonHeartbeatPendingSubagentWrite `json:"pending_subagent_writes,omitempty"`
+	// PendingSubagentDeletes tells the daemon to remove subagent files
+	// whose DB row was archived (e.g. by an admin UI action).
+	PendingSubagentDeletes []DaemonHeartbeatPendingSubagentDelete `json:"pending_subagent_deletes,omitempty"`
 }
 
 // HeartbeatStatusRuntimeGone is the ack Status used when the runtime row no
@@ -173,4 +182,49 @@ type DaemonHeartbeatPendingLocalSkills struct {
 type DaemonHeartbeatPendingLocalSkillImport struct {
 	ID       string `json:"id"`
 	SkillKey string `json:"skill_key"`
+}
+
+// DaemonHeartbeatSubagentReport is the per-runtime snapshot the daemon
+// attaches to its heartbeat. The server uses this to reconcile rows in
+// the `agent` table keyed on (runtime_id, source_path).
+type DaemonHeartbeatSubagentReport struct {
+	// Provider that produced the snapshot (e.g. "claude"). Server stores
+	// "<provider>_subagent" in agent.source_kind.
+	Provider  string                       `json:"provider"`
+	Subagents []DaemonHeartbeatSubagentRow `json:"subagents"`
+}
+
+// DaemonHeartbeatSubagentRow is one entry in the heartbeat snapshot.
+type DaemonHeartbeatSubagentRow struct {
+	Path        string         `json:"path"`
+	Slug        string         `json:"slug"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Model       string         `json:"model"`
+	Tools       []string       `json:"tools,omitempty"`
+	Body        string         `json:"body"`
+	Extra       map[string]any `json:"extra,omitempty"`
+	MtimeUnix   int64          `json:"mtime_unix"`
+}
+
+// DaemonHeartbeatPendingSubagentWrite is a push-down instruction from
+// the server: rewrite this file with the given content + frontmatter
+// and stamp it with the given mtime.
+type DaemonHeartbeatPendingSubagentWrite struct {
+	ID          string         `json:"id"`
+	Path        string         `json:"path"`
+	Name        string         `json:"name"`
+	Description string         `json:"description"`
+	Model       string         `json:"model"`
+	Tools       []string       `json:"tools,omitempty"`
+	Body        string         `json:"body"`
+	Extra       map[string]any `json:"extra,omitempty"`
+	MtimeUnix   int64          `json:"mtime_unix"`
+}
+
+// DaemonHeartbeatPendingSubagentDelete asks the daemon to remove a
+// subagent file whose DB row was archived.
+type DaemonHeartbeatPendingSubagentDelete struct {
+	ID   string `json:"id"`
+	Path string `json:"path"`
 }

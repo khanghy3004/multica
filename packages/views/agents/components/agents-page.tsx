@@ -151,6 +151,10 @@ export function AgentsPage({
   // Runtimes page uses), so the user can drill from a machine on that
   // page into the agents bound to it.
   const [runtimeMachineId, setRuntimeMachineId] = useState<string | null>(null);
+  // When true, narrow the list to agents mirrored from on-disk Claude
+  // Code subagent files (~/.claude/agents/<slug>.md). Off by default so
+  // existing flows are unchanged.
+  const [showOnlyClaudeSubagents, setShowOnlyClaudeSubagents] = useState(false);
   const [sort, setSort] = useState<SortKey>("recent");
   const [search, setSearch] = useState("");
   const [showCreate, setShowCreate] = useState(false);
@@ -338,6 +342,9 @@ export function AgentsPage({
         const detail = presenceMap.get(a.id);
         if (detail?.availability !== availabilityFilter) return false;
       }
+      if (showOnlyClaudeSubagents && a.source_kind !== "claude_subagent") {
+        return false;
+      }
       if (q) {
         if (
           !a.name.toLowerCase().includes(q) &&
@@ -355,6 +362,7 @@ export function AgentsPage({
     availabilityFilter,
     presenceMap,
     search,
+    showOnlyClaudeSubagents,
   ]);
 
   // Per-availability counts for the chip badges. Computed against
@@ -578,6 +586,8 @@ export function AgentsPage({
                   runtimeMachineId={runtimeMachineId}
                   onRuntimeMachineChange={setRuntimeMachineId}
                   agentCountByMachine={agentCountByMachine}
+                  showOnlyClaudeSubagents={showOnlyClaudeSubagents}
+                  setShowOnlyClaudeSubagents={setShowOnlyClaudeSubagents}
                 />
                 <AvailabilityFilterRow
                   value={availabilityFilter}
@@ -731,6 +741,8 @@ function ActiveToolbarRow({
   runtimeMachineId,
   onRuntimeMachineChange,
   agentCountByMachine,
+  showOnlyClaudeSubagents,
+  setShowOnlyClaudeSubagents,
 }: {
   scope: Scope;
   setScope: (v: Scope) => void;
@@ -747,6 +759,8 @@ function ActiveToolbarRow({
   runtimeMachineId: string | null;
   onRuntimeMachineChange: (id: string | null) => void;
   agentCountByMachine: Map<string, number>;
+  showOnlyClaudeSubagents: boolean;
+  setShowOnlyClaudeSubagents: (v: boolean | ((prev: boolean) => boolean)) => void;
 }) {
   const { t } = useT("agents");
   return (
@@ -762,6 +776,20 @@ function ActiveToolbarRow({
       </div>
       <ScopeSegment scope={scope} setScope={setScope} counts={scopeCounts} />
       <div className="ml-auto flex items-center gap-3">
+        <button
+          type="button"
+          aria-pressed={showOnlyClaudeSubagents}
+          onClick={() => setShowOnlyClaudeSubagents((v) => !v)}
+          className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-xs transition-colors ${
+            showOnlyClaudeSubagents
+              ? "border-primary bg-primary/10 text-primary"
+              : "border-border bg-background text-muted-foreground hover:text-foreground"
+          }`}
+          title="Show only agents synced from ~/.claude/agents"
+        >
+          {/* eslint-disable-next-line i18next/no-literal-string */}
+          {"Claude Code subagents"}
+        </button>
         <RuntimeMachineFilterDropdown
           machines={machines}
           value={runtimeMachineId}

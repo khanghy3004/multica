@@ -19,6 +19,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	"github.com/multica-ai/multica/server/internal/daemon/repocache"
 	"github.com/multica-ai/multica/server/pkg/agent"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // ErrRepoNotConfigured is returned by ensureRepoReady when the requested repo
@@ -1337,7 +1338,8 @@ func (d *Daemon) runHeartbeatTick(ctx context.Context, rid string) {
 		return
 	}
 	d.logger.Debug("heartbeat: HTTP tick", "runtime_id", rid)
-	resp, err := d.client.SendHeartbeat(ctx, rid)
+	report := d.buildSubagentReport(rid)
+	resp, err := d.client.SendHeartbeat(ctx, rid, report)
 	if err != nil {
 		if ctx.Err() == nil {
 			if isRuntimeNotFoundError(err) {
@@ -1405,6 +1407,75 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 			go d.handleLocalSkillImport(ctx, *rt, *resp.PendingLocalSkillImport)
 		}
 	}
+	for _, w := range resp.PendingSubagentWrites {
+		w := w
+		go d.handleSubagentWrite(ctx, runtimeID, w)
+	}
+	for _, del := range resp.PendingSubagentDeletes {
+		del := del
+		go d.handleSubagentDelete(ctx, runtimeID, del)
+	}
+}
+
+// buildSubagentReport gathers the on-disk subagent snapshot for a runtime.
+// Returns nil when the runtime is not known locally or the provider has no
+// subagent surface; callers attach nil reports as "no report" so old
+// servers ignore the field entirely.
+func (d *Daemon) buildSubagentReport(runtimeID string) *protocol.DaemonHeartbeatSubagentReport {
+	rt := d.findRuntime(runtimeID)
+	if rt == nil {
+		return nil
+	}
+	list, supported, err := listLocalSubagents(rt.Provider)
+	if err != nil {
+		d.logger.Debug("subagent list failed", "runtime_id", runtimeID, "err", err)
+		return nil
+	}
+	if !supported {
+		return nil
+	}
+	rows := make([]protocol.DaemonHeartbeatSubagentRow, 0, len(list))
+	for _, la := range list {
+		rows = append(rows, protocol.DaemonHeartbeatSubagentRow{
+			Path:        la.Path,
+			Slug:        la.Slug,
+			Name:        la.Name,
+			Description: la.Description,
+			Model:       la.Model,
+			Tools:       la.Tools,
+			Body:        la.Body,
+			Extra:       la.Extra,
+			MtimeUnix:   la.Mtime.Unix(),
+		})
+	}
+	return &protocol.DaemonHeartbeatSubagentReport{
+		Provider:  rt.Provider,
+		Subagents: rows,
+	}
+}
+
+func (d *Daemon) handleSubagentWrite(ctx context.Context, runtimeID string, w protocol.DaemonHeartbeatPendingSubagentWrite) {
+	mtime := time.Unix(w.MtimeUnix, 0).UTC()
+	fm := Frontmatter{
+		Name:        w.Name,
+		Description: w.Description,
+		Model:       w.Model,
+		Tools:       w.Tools,
+		Extra:       w.Extra,
+	}
+	if err := writeLocalSubagent(w.Path, w.Body, fm, mtime); err != nil {
+		d.logger.Warn("subagent write failed", "runtime_id", runtimeID, "id", w.ID, "path", w.Path, "err", err)
+		return
+	}
+	d.logger.Info("subagent write ok", "runtime_id", runtimeID, "id", w.ID, "path", w.Path)
+}
+
+func (d *Daemon) handleSubagentDelete(ctx context.Context, runtimeID string, del protocol.DaemonHeartbeatPendingSubagentDelete) {
+	if err := deleteLocalSubagent(del.Path); err != nil {
+		d.logger.Warn("subagent delete failed", "runtime_id", runtimeID, "id", del.ID, "path", del.Path, "err", err)
+		return
+	}
+	d.logger.Info("subagent delete ok", "runtime_id", runtimeID, "id", del.ID, "path", del.Path)
 }
 
 // handleModelList resolves the provider's supported models (via static

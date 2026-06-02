@@ -55,6 +55,14 @@ interface AgentDetailPageProps {
   agentId: string;
 }
 
+// subagentFilename strips the directory prefix off a `~/.claude/agents/<slug>.md`
+// source_path so the synced badge stays compact. Falls back to the raw path
+// if it contains no separator.
+function subagentFilename(p: string): string {
+  const idx = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return idx >= 0 ? p.slice(idx + 1) : p;
+}
+
 export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
@@ -374,6 +382,15 @@ function DetailHeader({
       leaf={
         <>
           <h1 className="min-w-0 truncate text-sm font-medium text-foreground">{agent.name}</h1>
+          {agent.source_path && (
+            <span
+              className="inline-flex shrink-0 items-center rounded-md border bg-muted px-1.5 py-0.5 text-xs text-muted-foreground"
+              title={agent.source_path}
+            >
+              {/* eslint-disable-next-line i18next/no-literal-string */}
+              {`Synced from ~/.claude/agents/${subagentFilename(agent.source_path)}`}
+            </span>
+          )}
           {av && presence && (
             <span
               className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border px-1.5 py-0.5 text-xs ${av.textClass}`}

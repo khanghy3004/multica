@@ -583,8 +583,9 @@ func (h *Handler) DaemonDeregister(w http.ResponseWriter, r *http.Request) {
 }
 
 type DaemonHeartbeatRequest struct {
-	RuntimeID           string `json:"runtime_id"`
-	SupportsBatchImport bool   `json:"supports_batch_import,omitempty"`
+	RuntimeID           string                                  `json:"runtime_id"`
+	SupportsBatchImport bool                                    `json:"supports_batch_import,omitempty"`
+	SubagentReport      *protocol.DaemonHeartbeatSubagentReport `json:"subagent_report,omitempty"`
 }
 
 // heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
@@ -732,6 +733,16 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.SubagentReport != nil {
+		writes, deletes, rerr := h.reconcileSubagents(r.Context(), rt.ID, req.SubagentReport.Provider, req.SubagentReport.Subagents)
+		if rerr != nil {
+			logSubagentReconcileError(runtimeID, rerr)
+		} else {
+			ack.PendingSubagentWrites = writes
+			ack.PendingSubagentDeletes = deletes
+		}
+	}
+
 	outcome = "ok"
 	// Preserve the existing HTTP response shape: the runtime_id field is new
 	// in the WS path and would be redundant noise on the HTTP path where the
@@ -752,6 +763,12 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	if len(ack.PendingLocalSkillImports) > 0 {
 		resp["pending_local_skill_imports"] = ack.PendingLocalSkillImports
 	}
+	if len(ack.PendingSubagentWrites) > 0 {
+		resp["pending_subagent_writes"] = ack.PendingSubagentWrites
+	}
+	if len(ack.PendingSubagentDeletes) > 0 {
+		resp["pending_subagent_deletes"] = ack.PendingSubagentDeletes
+	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -769,7 +786,7 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 // and tells the daemon to drop the stale runtime and re-register. Other DB
 // errors still propagate as errors so they keep their existing Warn logging
 // and the daemon does not mistake a hiccup for a deletion.
-func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool) (*protocol.DaemonHeartbeatAckPayload, error) {
+func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws.ClientIdentity, runtimeID string, supportsBatchImport bool, subagentReport *protocol.DaemonHeartbeatSubagentReport) (*protocol.DaemonHeartbeatAckPayload, error) {
 	runtimeUUID, err := util.ParseUUID(runtimeID)
 	if err != nil {
 		return nil, fmt.Errorf("invalid runtime_id: %w", err)
@@ -789,7 +806,19 @@ func (h *Handler) HandleDaemonWSHeartbeat(ctx context.Context, identity daemonws
 		return nil, fmt.Errorf("runtime not in connection workspace")
 	}
 	ack, _, err := h.processHeartbeat(ctx, rt, supportsBatchImport)
-	return ack, err
+	if err != nil {
+		return ack, err
+	}
+	if subagentReport != nil {
+		writes, deletes, rerr := h.reconcileSubagents(ctx, rt.ID, subagentReport.Provider, subagentReport.Subagents)
+		if rerr != nil {
+			logSubagentReconcileError(runtimeID, rerr)
+		} else {
+			ack.PendingSubagentWrites = writes
+			ack.PendingSubagentDeletes = deletes
+		}
+	}
+	return ack, nil
 }
 
 // recordHeartbeat marks the runtime as alive. When LivenessStore is available
