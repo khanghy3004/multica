@@ -293,6 +293,26 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.15",
+        date: "2026-06-03",
+        title: "Text Highlights + More Stable Agent Runs",
+        changes: [],
+        features: [
+          "Descriptions and comments now support highlighted text, making important notes easier to scan",
+        ],
+        improvements: [
+          "Chat loads messages faster and keeps live updates smoother during long conversations",
+          "Task failures now show clearer reasons, so teams can understand and recover from failed work more quickly",
+        ],
+        fixes: [
+          "Issue start and due dates stay on the selected calendar day across time zones",
+          "Skill setup no longer fails when the same supporting Skill file is included more than once",
+          "OpenCode model discovery waits longer before timing out, reducing false setup failures",
+          "Editor suggestion menus close reliably when focus moves outside them",
+          "Starting several server instances at once no longer risks overlapping setup work",
+        ],
+      },
+      {
         version: "0.3.14",
         date: "2026-06-02",
         title: "Japanese Support and /skill Command",

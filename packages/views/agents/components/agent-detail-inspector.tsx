@@ -46,6 +46,7 @@ import { RuntimePicker } from "./inspector/runtime-picker";
 import { SkillAttach } from "./inspector/skill-attach";
 import { ThinkingPropRow } from "./inspector/thinking-prop-row";
 import { VisibilityPicker } from "./inspector/visibility-picker";
+import { LarkAgentBindButton } from "../../settings/components/lark-tab";
 
 interface InspectorProps {
   agent: Agent;
@@ -205,6 +206,27 @@ export function AgentDetailInspector({
           <SkillAttach agent={agent} canEdit={canEdit} />
         </div>
       </div>
+
+      {/* Integrations — surfaces external-channel bind entry points
+          (Lark Bot today; Slack / Discord in the future). The bind
+          button self-hides when the server-side device-flow install
+          capability gate is closed, so this section may render empty
+          on deployments without a configured Lark app — that's
+          intentional and matches the "don't surface a flow that will
+          fail" guarantee. We only mount it for editors: viewers
+          shouldn't see a CTA they can't action. */}
+      {canEdit && (
+        <div className="flex flex-col px-5 py-4">
+          <div className="mb-2 flex items-center gap-2">
+            <span className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+              {t(($) => $.inspector.section_integrations)}
+            </span>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <LarkAgentBindButton agentId={agent.id} agentName={agent.name} />
+          </div>
+        </div>
+      )}
     </aside>
   );
 }

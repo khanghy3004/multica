@@ -658,7 +658,16 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 			b.WriteString("Detailed skill instructions are in `.agent_context/skills/`. Each subdirectory contains a `SKILL.md`.\n\n")
 		}
 		for _, skill := range ctx.AgentSkills {
-			fmt.Fprintf(&b, "- **%s**\n", skill.Name)
+			// Emit the skill's one-line description alongside its name so the
+			// brief carries a "when to load" trigger signal. Claude-family
+			// providers get this natively from frontmatter discovery; providers
+			// without native discovery (hermes/default) only ever see this
+			// list, so a bare name gives them no signal for on-demand loading.
+			if desc := strings.TrimSpace(skill.Description); desc != "" {
+				fmt.Fprintf(&b, "- **%s** — %s\n", skill.Name, desc)
+			} else {
+				fmt.Fprintf(&b, "- **%s**\n", skill.Name)
+			}
 		}
 		b.WriteString("\n")
 	}

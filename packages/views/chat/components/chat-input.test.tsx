@@ -1,6 +1,6 @@
 import { forwardRef, useRef, useImperativeHandle } from "react";
 import { describe, it, expect, vi } from "vitest";
-import { render, screen, fireEvent, waitFor } from "@testing-library/react";
+import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import enCommon from "../../locales/en/common.json";
@@ -94,7 +94,6 @@ vi.mock("@multica/core/chat", () => {
     activeSessionId: null as string | null,
     selectedAgentId: "agent-1",
     inputDrafts: {} as Record<string, string>,
-    focusMode: false,
     setInputDraft: vi.fn(),
     clearInputDraft: vi.fn(),
   };
@@ -130,10 +129,12 @@ describe("ChatInput attachment wiring", () => {
     const { onUploadFile } = renderInput();
     expect(dropHandlers.onDrop).not.toBeNull();
     const file = new File(["x"], "drop.png", { type: "image/png" });
-    dropHandlers.onDrop?.([file]);
-    // Microtask: the mock editor awaits onUploadFile before mutating its value.
-    await Promise.resolve();
-    await Promise.resolve();
+    await act(async () => {
+      dropHandlers.onDrop?.([file]);
+      // Microtask: the mock editor awaits onUploadFile before mutating its value.
+      await Promise.resolve();
+      await Promise.resolve();
+    });
     expect(onUploadFile).toHaveBeenCalledWith(file);
   });
 
@@ -148,7 +149,11 @@ describe("ChatInput attachment wiring", () => {
     // mock editor appends the markdown link into its value and calls
     // onUpdate so the input flips out of the empty state.
     const file = new File(["x"], "drop.png", { type: "image/png" });
-    dropHandlers.onDrop?.([file]);
+    await act(async () => {
+      dropHandlers.onDrop?.([file]);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
 
     // Wait for the submit button to become enabled (onUpdate has fired and
     // React has re-rendered). SubmitButton has no aria-label, so we pick
@@ -181,7 +186,10 @@ describe("ChatInput attachment wiring", () => {
     fireEvent.change(screen.getByTestId("editor"), { target: { value: "preview text" } });
 
     const file = new File(["x"], "slow.png", { type: "image/png" });
-    dropHandlers.onDrop?.([file]);
+    await act(async () => {
+      dropHandlers.onDrop?.([file]);
+      await Promise.resolve();
+    });
 
     // While the upload is pending the SubmitButton must be disabled.
     // Bypassing this would send the message with the attachment id
@@ -192,7 +200,10 @@ describe("ChatInput attachment wiring", () => {
       expect(sendButton).toBeDisabled();
     });
 
-    resolveUpload!(makeUpload({ id: "att-slow", link: "https://cdn.example/att-slow.png", filename: "slow.png" }));
+    await act(async () => {
+      resolveUpload!(makeUpload({ id: "att-slow", link: "https://cdn.example/att-slow.png", filename: "slow.png" }));
+      await Promise.resolve();
+    });
 
     let sendButton: HTMLElement;
     await waitFor(() => {

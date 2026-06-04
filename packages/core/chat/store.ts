@@ -14,8 +14,7 @@ export const DRAFT_NEW_SESSION = "__new__";
 const CHAT_WIDTH_KEY = "multica:chat:width";
 const CHAT_HEIGHT_KEY = "multica:chat:height";
 const CHAT_EXPANDED_KEY = "multica:chat:expanded";
-/** Focus mode is a personal preference — global across workspaces/sessions. */
-const FOCUS_MODE_KEY = "multica:chat:focusMode";
+const SELECTED_CONTEXT_KEY = "multica:chat:selectedContext";
 /**
  * Open/closed preference, persisted globally (not per-workspace) — most users
  * have one habitual chat-panel preference across workspaces. Missing key =
@@ -47,6 +46,30 @@ function writeDrafts(storage: StorageAdapter, key: string, drafts: Record<string
   } else {
     storage.setItem(key, JSON.stringify(pruned));
   }
+}
+
+function readSelectedContext(storage: StorageAdapter, key: string): ContextAnchor | null {
+  const raw = storage.getItem(key);
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<ContextAnchor> | null;
+    if (
+      parsed &&
+      (parsed.type === "issue" || parsed.type === "project") &&
+      typeof parsed.id === "string" &&
+      typeof parsed.label === "string"
+    ) {
+      return {
+        type: parsed.type,
+        id: parsed.id,
+        label: parsed.label,
+        subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : undefined,
+      };
+    }
+  } catch {
+    // Ignore corrupt local storage.
+  }
+  return null;
 }
 
 export const CHAT_MIN_W = 360;
@@ -90,11 +113,10 @@ export interface ChatState {
   /** Drafts per session: sessionId (or DRAFT_NEW_SESSION) → markdown text. */
   inputDrafts: Record<string, string>;
   /**
-   * When on, the chat tracks whatever issue/project/inbox-item the user is
-   * looking at and prepends it to outgoing messages. Persisted globally so
-   * the preference survives workspace switches and reloads.
+   * Explicitly selected send context. Persisted per workspace, shared across
+   * chat sessions in that workspace, and intentionally not cleared after send.
    */
-  focusMode: boolean;
+  selectedContext: ContextAnchor | null;
   /** Raw user-chosen size — no clamp applied. UI layer clamps at render time. */
   chatWidth: number;
   chatHeight: number;
@@ -106,7 +128,7 @@ export interface ChatState {
   /** sessionId accepts a real session UUID or DRAFT_NEW_SESSION. */
   setInputDraft: (sessionId: string, draft: string) => void;
   clearInputDraft: (sessionId: string) => void;
-  setFocusMode: (on: boolean) => void;
+  setSelectedContext: (context: ContextAnchor | null) => void;
   /** Persist raw size and auto-exit expanded mode. */
   setChatSize: (width: number, height: number) => void;
   setExpanded: (expanded: boolean) => void;
@@ -135,7 +157,7 @@ export function createChatStore(options: ChatStoreOptions) {
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
     selectedAgentId: storage.getItem(wsKey(AGENT_STORAGE_KEY)),
     inputDrafts: readDrafts(storage, wsKey(DRAFTS_KEY)),
-    focusMode: storage.getItem(FOCUS_MODE_KEY) === "true",
+    selectedContext: readSelectedContext(storage, wsKey(SELECTED_CONTEXT_KEY)),
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
@@ -171,11 +193,11 @@ export function createChatStore(options: ChatStoreOptions) {
       writeDrafts(storage, wsKey(DRAFTS_KEY), next);
       set({ inputDrafts: next });
     },
-    setFocusMode: (on) => {
-      logger.info("setFocusMode", { to: on });
-      if (on) storage.setItem(FOCUS_MODE_KEY, "true");
-      else storage.removeItem(FOCUS_MODE_KEY);
-      set({ focusMode: on });
+    setSelectedContext: (context) => {
+      logger.info("setSelectedContext", { context });
+      if (context) storage.setItem(wsKey(SELECTED_CONTEXT_KEY), JSON.stringify(context));
+      else storage.removeItem(wsKey(SELECTED_CONTEXT_KEY));
+      set({ selectedContext: context });
     },
     clearInputDraft: (sessionId) => {
       const current = get().inputDrafts;
@@ -212,6 +234,7 @@ export function createChatStore(options: ChatStoreOptions) {
     const nextSession = storage.getItem(wsKey(SESSION_STORAGE_KEY));
     const nextAgent = storage.getItem(wsKey(AGENT_STORAGE_KEY));
     const nextDrafts = readDrafts(storage, wsKey(DRAFTS_KEY));
+    const nextSelectedContext = readSelectedContext(storage, wsKey(SELECTED_CONTEXT_KEY));
     logger.info("workspace rehydration", {
       prevSession: store.getState().activeSessionId,
       nextSession,
@@ -223,6 +246,7 @@ export function createChatStore(options: ChatStoreOptions) {
       activeSessionId: nextSession,
       selectedAgentId: nextAgent,
       inputDrafts: nextDrafts,
+      selectedContext: nextSelectedContext,
     });
   });
 

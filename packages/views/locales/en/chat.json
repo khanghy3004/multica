@@ -26,7 +26,8 @@
     "process_steps_other": "{{count}} steps",
     "copy_action": "Copy",
     "copied_toast": "Copied",
-    "copy_failed_toast": "Copy failed"
+    "copy_failed_toast": "Copy failed",
+    "loading_older": "Loading older messages…"
   },
   "session_history": {
     "untitled": "Untitled",
@@ -76,7 +77,8 @@
     "my_agents": "My agents",
     "others": "Others",
     "no_agents": "No agents",
-    "history_group": "Chat history"
+    "history_group": "Chat history",
+    "agent_filter_placeholder": "Search agents..."
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",
@@ -94,15 +96,19 @@
     "plan_next": "Plan what to work on next"
   },
   "context_anchor": {
-    "tooltip_disabled": "Nothing to share with Multica on this page",
-    "tooltip_off": "Let Multica know what you're viewing",
-    "tooltip_on_issue": "Multica knows you're viewing {{label}} · Click to turn off",
-    "tooltip_on_project": "Multica knows you're viewing project \"{{label}}\" · Click to turn off",
-    "card_tooltip_issue_with_subtitle": "Multica knows you're viewing {{label}} — {{subtitle}}",
-    "card_tooltip_issue": "Multica knows you're viewing {{label}}",
-    "card_tooltip_project": "Multica knows you're viewing project \"{{label}}\"",
-    "aria_stop": "Stop sharing current page",
-    "aria_start": "Share current page with Multica"
+    "card_tooltip_issue_with_subtitle": "Selected context: {{label}} — {{subtitle}}",
+    "card_tooltip_issue": "Selected context: {{label}}",
+    "card_tooltip_project": "Selected context: project \"{{label}}\"",
+    "tooltip_picker": "Pick context for this chat",
+    "tooltip_selected_issue": "Context: {{label}} · Click to change",
+    "tooltip_selected_project": "Context: project \"{{label}}\" · Click to change",
+    "aria_pick": "Pick chat context",
+    "aria_clear": "Clear chat context",
+    "search_placeholder": "Search issues or projects…",
+    "section_current": "Current page",
+    "section_recent": "Recent",
+    "section_search": "Search",
+    "search_empty": "No matching issues or projects"
   },
   "no_agent_banner": "You need an agent to start chatting.",
   "offline_banner": {

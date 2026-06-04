@@ -140,6 +140,7 @@
     "section_properties": "속성",
     "section_details": "세부 정보",
     "section_skills": "스킬",
+    "section_integrations": "연동",
     "prop_runtime": "런타임",
     "prop_model": "모델",
     "prop_thinking": "추론",
