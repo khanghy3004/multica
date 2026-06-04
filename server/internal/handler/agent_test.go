@@ -357,7 +357,10 @@ func TestGetAgentEnv_OwnerSucceedsAndAudits(t *testing.T) {
 	if resp.AgentID != agentID {
 		t.Errorf("agent_id mismatch: got %q", resp.AgentID)
 	}
-	expected := map[string]string{"KEY_ONE": "v1", "KEY_TWO": "v2"}
+	// Server masks every value with `****` — plaintext is NEVER sent
+	// on the wire. The UI sees only key names; PUT honours the
+	// sentinel as "preserve existing".
+	expected := map[string]string{"KEY_ONE": "****", "KEY_TWO": "****"}
 	if !reflect.DeepEqual(resp.CustomEnv, expected) {
 		t.Errorf("CustomEnv mismatch: got %v, want %v", resp.CustomEnv, expected)
 	}

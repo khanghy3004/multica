@@ -130,18 +130,25 @@ func (h *Handler) authorizeAgentEnv(w http.ResponseWriter, r *http.Request) (db.
 	return agent, member, true
 }
 
-// GetAgentEnv returns the plaintext custom_env map for a single agent
-// after gating through authorizeAgentEnv. Every successful read writes
-// an `agent_env_revealed` row to activity_log (keys only, never
-// values) so workspace owners have a trail of who saw which keys.
+// GetAgentEnv returns the agent's env KEY NAMES with every value
+// masked as the `****` sentinel. The server NEVER sends plaintext
+// values to any client — not even an authenticated workspace owner —
+// because a browser cache, screenshot, or accidental log line is an
+// unrecoverable secret disclosure. Owners and admins who need a real
+// value must either re-source it from where they originally got it
+// (vault, API console, key file) or PUT a new value through
+// UpdateAgentEnv to overwrite the old one.
 //
-// Audit semantics are fail-closed: if we cannot persist the audit row
-// we MUST NOT serve the plaintext. A reveal we cannot record is
-// indistinguishable from an unaudited reveal, which would silently
-// break the MUL-2600 promise of "every reveal leaves a queryable
-// trail". Operators who hit a 500 here see the audit-log outage and
-// can fix it; the alternative — quietly handing out secrets — is
-// invisible.
+// The `****` round-trip is honoured by mergeAgentEnv on write: a PUT
+// carrying `****` for an existing key preserves the stored value, so
+// the UI can add/remove keys or replace values without the server
+// ever surfacing the originals.
+//
+// We still write an `agent_env_revealed` row (now interpreted as
+// "key names listed") because operators want a trail of who poked at
+// agent secrets even if no value was disclosed. Fail-closed: an
+// audit-write outage refuses the read so we don't quietly serve key
+// lists without recording it.
 func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 	agent, member, ok := h.authorizeAgentEnv(w, r)
 	if !ok {
@@ -149,8 +156,17 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 	}
 
 	customEnv := h.unmarshalCustomEnv(agent)
-
 	revealedKeys := sortedKeys(customEnv)
+
+	// Build the masked response: same shape as before, every value
+	// replaced with the `****` sentinel. The wire payload is now
+	// independent of the at-rest ciphertext — a successful response
+	// proves nothing about the secret.
+	masked := make(map[string]string, len(revealedKeys))
+	for _, k := range revealedKeys {
+		masked[k] = envSentinel
+	}
+
 	details, _ := json.Marshal(map[string]any{
 		"agent_id":      uuidToString(agent.ID),
 		"agent_name":    agent.Name,
@@ -165,7 +181,7 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 		Action:      agentEnvActivityRevealed,
 		Details:     details,
 	}); err != nil {
-		slog.Error("agent_env_revealed audit write failed; refusing to serve plaintext",
+		slog.Error("agent_env_revealed audit write failed; refusing to serve key list",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 		writeError(w, http.StatusInternalServerError, "audit log write failed; refusing to serve env without a recorded reveal")
 		return
@@ -173,7 +189,7 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, AgentEnvResponse{
 		AgentID:   uuidToString(agent.ID),
-		CustomEnv: customEnv,
+		CustomEnv: masked,
 	})
 }
 
@@ -281,9 +297,19 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 	workspaceID := uuidToString(updated.WorkspaceID)
 	h.publish(protocol.EventAgentStatus, workspaceID, "member", uuidToString(member.UserID), map[string]any{"agent": broadcastAgentResponse(resp)})
 
+	// Mirror GetAgentEnv: the PUT response shape includes a custom_env
+	// map but every value is masked. Returning the just-written
+	// plaintext would let any client that retains the response body
+	// (devtools, log, error reporter) hold the secret indefinitely;
+	// the UI doesn't need it anyway because the user just typed the
+	// values into their own input fields.
+	maskedMerged := make(map[string]string, len(merged))
+	for k := range merged {
+		maskedMerged[k] = envSentinel
+	}
 	writeJSON(w, http.StatusOK, AgentEnvResponse{
 		AgentID:   uuidToString(updated.ID),
-		CustomEnv: merged,
+		CustomEnv: maskedMerged,
 	})
 }
 
