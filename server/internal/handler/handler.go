@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -142,6 +143,15 @@ type Handler struct {
 	// UI consults IsConfigured() to decide whether to surface install
 	// entry points.
 	LarkAPIClient lark.APIClient
+	// AgentEnvBox encrypts agent.custom_env at rest. Nil when
+	// MULTICA_AGENT_ENV_KEY is unset — falls back to legacy plaintext
+	// JSONB storage so a self-host deployment that hasn't opted in keeps
+	// working. When non-nil:
+	//   * UpdateAgentEnv encrypts before persisting
+	//   * unmarshalCustomEnv detects the envelope shape and decrypts
+	//   * legacy plaintext rows still decode (read path is
+	//     backward-compatible until an admin re-saves the env)
+	AgentEnvBox *secretbox.Box
 	// LarkHub owns the per-installation supervisor goroutines that
 	// hold the §4.4 WS lease and run the EventConnector. Nil only
 	// when the master at-rest key (MULTICA_LARK_SECRET_KEY) is unset.

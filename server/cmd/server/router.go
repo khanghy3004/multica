@@ -177,6 +177,25 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
 	}
 
+	// Agent env at-rest encryption. When MULTICA_AGENT_ENV_KEY is set
+	// (32-byte base64), every UpdateAgentEnv write is wrapped in an
+	// AES-256-GCM envelope before persisting to agent.custom_env. With
+	// the key unset the server falls back to legacy plaintext storage
+	// so existing self-host deployments keep working; new operators
+	// should set the key to ensure DB dumps don't expose secrets.
+	if envKey, err := secretbox.LoadKey("MULTICA_AGENT_ENV_KEY"); err == nil {
+		box, err := secretbox.New(envKey)
+		if err != nil {
+			slog.Error("agent_env: secretbox.New failed; falling back to plaintext", "error", err)
+		} else {
+			h.AgentEnvBox = box
+			slog.Info("agent_env: at-rest encryption enabled")
+		}
+	} else {
+		slog.Warn("agent_env: MULTICA_AGENT_ENV_KEY unset; storing custom_env as plaintext JSONB",
+			"hint", "generate with: openssl rand -base64 32")
+	}
+
 	// Lark integration. Only wired when MULTICA_LARK_SECRET_KEY is set:
 	// the InstallationService refuses to fall back to plaintext storage
 	// for app_secret, and the BindingTokenService cannot mint usable

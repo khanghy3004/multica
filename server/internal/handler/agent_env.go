@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -13,6 +15,43 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+// base64DecodeStd is a thin alias for base64.StdEncoding.DecodeString
+// so call sites read cleaner inline.
+func base64DecodeStd(s string) ([]byte, error) {
+	return base64.StdEncoding.DecodeString(s)
+}
+
+// marshalCustomEnv encodes a map for at-rest storage. When
+// h.AgentEnvBox is non-nil the payload is wrapped in the v1 envelope
+// (AES-256-GCM via secretbox.Seal). With box unset it falls back to
+// plaintext JSONB so an operator that hasn't configured the master
+// key still has working env management — the GET/PUT endpoints stay
+// admin-only and audited regardless.
+func (h *Handler) marshalCustomEnv(m map[string]string) ([]byte, error) {
+	if m == nil {
+		m = map[string]string{}
+	}
+	plain, err := json.Marshal(m)
+	if err != nil {
+		return nil, fmt.Errorf("custom_env: marshal plaintext: %w", err)
+	}
+	if h.AgentEnvBox == nil || len(m) == 0 {
+		// Empty maps always land as `{}` so a row with no env is
+		// trivially distinguishable from an encrypted one in DB dumps
+		// (no envelope structure to confuse later operators).
+		return plain, nil
+	}
+	sealed, err := h.AgentEnvBox.Seal(plain)
+	if err != nil {
+		return nil, fmt.Errorf("custom_env: seal: %w", err)
+	}
+	env := envEnvelopeV1{
+		V:  envEnvelopeVersion,
+		CT: base64.StdEncoding.EncodeToString(sealed),
+	}
+	return json.Marshal(env)
+}
 
 // envSentinel is the masked marker the UI / clients see in place of a
 // real value. A PUT body carrying it for a given key means "do not
@@ -109,7 +148,7 @@ func (h *Handler) GetAgentEnv(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	customEnv := unmarshalCustomEnv(agent)
+	customEnv := h.unmarshalCustomEnv(agent)
 
 	revealedKeys := sortedKeys(customEnv)
 	details, _ := json.Marshal(map[string]any{
@@ -166,11 +205,13 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 		req.CustomEnv = map[string]string{}
 	}
 
-	existing := unmarshalCustomEnv(agent)
+	existing := h.unmarshalCustomEnv(agent)
 	merged, audit := mergeAgentEnv(existing, req.CustomEnv)
 
-	envBytes, err := json.Marshal(merged)
+	envBytes, err := h.marshalCustomEnv(merged)
 	if err != nil {
+		slog.Error("agent_env update: marshal/encrypt failed",
+			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to encode env")
 		return
 	}
@@ -230,7 +271,7 @@ func (h *Handler) UpdateAgentEnv(w http.ResponseWriter, r *http.Request) {
 	// "N variables configured" indicator. Payload is the redacted
 	// AgentResponse — no env values are sent. Skills are reloaded so the
 	// broadcast doesn't tell subscribers the agent has no skills (#3459).
-	resp := agentToResponse(updated)
+	resp := h.agentToResponse(updated)
 	if err := h.attachAgentSkills(r.Context(), &resp, updated.ID); err != nil {
 		slog.Warn("load agent skills after env update failed",
 			append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(updated.ID))...)
@@ -311,14 +352,78 @@ func mergeAgentEnv(existing, request map[string]string) (map[string]string, envA
 	return merged, audit
 }
 
-// unmarshalCustomEnv decodes an agent's stored custom_env bytea into a
-// map, returning an empty (never nil) map so callers can iterate
-// safely.
-func unmarshalCustomEnv(a db.Agent) map[string]string {
+// envEnvelopeVersion is the current at-rest envelope schema version.
+// Bump when introducing key rotation or AEAD changes; the read path
+// switches on it.
+const envEnvelopeVersion = 1
+
+// envEnvelopeV1 is the JSONB shape used when MULTICA_AGENT_ENV_KEY is
+// set. Sentinel keys (_v, _ct) start with underscore to prevent
+// collision with caller-supplied env names, which by convention are
+// uppercase letters / digits / underscores starting with a letter.
+type envEnvelopeV1 struct {
+	V  int    `json:"_v"`
+	CT string `json:"_ct"` // base64-std of nonce||ciphertext||tag
+}
+
+// isEnvelopeShape returns true if raw decodes as a v1 envelope. Reads
+// only the top-level keys to keep the probe cheap.
+func isEnvelopeShape(raw []byte) bool {
+	var probe map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return false
+	}
+	_, hasV := probe["_v"]
+	_, hasCT := probe["_ct"]
+	return hasV && hasCT
+}
+
+// unmarshalCustomEnv decodes an agent's stored custom_env into a map,
+// returning an empty (never nil) map so callers can iterate safely.
+// Supports both the v1 envelope (encrypted, requires h.AgentEnvBox)
+// and legacy plaintext JSONB so existing rows keep reading until an
+// admin saves them through the encrypted write path.
+func (h *Handler) unmarshalCustomEnv(a db.Agent) map[string]string {
 	out := map[string]string{}
 	if len(a.CustomEnv) == 0 {
 		return out
 	}
+	if isEnvelopeShape(a.CustomEnv) {
+		if h.AgentEnvBox == nil {
+			slog.Error("custom_env: row is encrypted but MULTICA_AGENT_ENV_KEY is unset", "agent_id", uuidToString(a.ID))
+			return map[string]string{}
+		}
+		var env envEnvelopeV1
+		if err := json.Unmarshal(a.CustomEnv, &env); err != nil {
+			slog.Warn("custom_env: envelope decode failed", "agent_id", uuidToString(a.ID), "error", err)
+			return map[string]string{}
+		}
+		if env.V != envEnvelopeVersion {
+			slog.Error("custom_env: unknown envelope version", "agent_id", uuidToString(a.ID), "version", env.V)
+			return map[string]string{}
+		}
+		sealed, err := base64DecodeStd(env.CT)
+		if err != nil {
+			slog.Warn("custom_env: base64 decode failed", "agent_id", uuidToString(a.ID), "error", err)
+			return map[string]string{}
+		}
+		plain, err := h.AgentEnvBox.Open(sealed)
+		if err != nil {
+			slog.Warn("custom_env: secretbox open failed", "agent_id", uuidToString(a.ID), "error", err)
+			return map[string]string{}
+		}
+		if err := json.Unmarshal(plain, &out); err != nil {
+			slog.Warn("custom_env: plaintext decode failed", "agent_id", uuidToString(a.ID), "error", err)
+			return map[string]string{}
+		}
+		if out == nil {
+			return map[string]string{}
+		}
+		return out
+	}
+	// Legacy plaintext fallback. Existing rows read transparently;
+	// they get upgraded to the envelope on the next PUT through
+	// UpdateAgentEnv.
 	if err := json.Unmarshal(a.CustomEnv, &out); err != nil {
 		slog.Warn("failed to unmarshal agent custom_env", "agent_id", uuidToString(a.ID), "error", err)
 		return map[string]string{}
