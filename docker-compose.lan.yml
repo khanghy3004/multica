@@ -1,0 +1,7 @@
+services:
+  backend:
+    ports: !override
+      - "0.0.0.0:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
+  frontend:
+    ports: !override
+      - "0.0.0.0:${FRONTEND_PORT:-3000}:3000"

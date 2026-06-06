@@ -1,0 +1,11 @@
+{
+	local_certs
+}
+
+multica.local {
+	reverse_proxy localhost:3000
+}
+
+api.multica.local {
+	reverse_proxy localhost:8080
+}
