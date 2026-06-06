@@ -336,6 +336,13 @@ func (h *Hub) Run(ctx context.Context) {
 // returns once those deadlines elapse.
 func (h *Hub) Wait() {
 	h.wg.Wait()
+	// Supervisors (and thus inbound delivery) have stopped, so no new
+	// run triggers can be scheduled. Drain the debounced pending triggers
+	// before joining replies: the flush may itself emit an offline/archived
+	// notice, and FlushPendingRuns blocks until those finish.
+	if h.dispatcher != nil {
+		h.dispatcher.FlushPendingRuns()
+	}
 	h.replyWg.Wait()
 }
 
@@ -486,7 +493,11 @@ func leaseToken(nodeID string, gen uint64) string {
 // secret is never extracted; the encrypted ciphertext is fine to hash.
 func installationFingerprint(inst db.LarkInstallation) string {
 	sum := sha256.Sum256(inst.AppSecretEncrypted)
-	return inst.AppID + "|" + inst.BotOpenID + "|" + hex.EncodeToString(sum[:])
+	// region is part of the fingerprint: if a re-install corrects the
+	// cloud (e.g. a row mis-detected as feishu is re-scanned as lark),
+	// the WS bootstrap host changes, so the running supervisor must be
+	// torn down and restarted against the new host.
+	return inst.AppID + "|" + inst.BotOpenID + "|" + inst.Region + "|" + hex.EncodeToString(sum[:])
 }
 
 // supervise owns one installation's connection lifecycle. It loops:

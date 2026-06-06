@@ -7,8 +7,8 @@
   "input": {
     "placeholder_no_agent": "チャットを始めるにはエージェントを作成してください",
     "placeholder_archived": "このセッションはアーカイブされています",
-    "placeholder_named": "{{name}} に指示してください…",
-    "placeholder_default": "やってほしいことを入力してください…",
+    "placeholder_named": "{{name}} にメッセージ…",
+    "placeholder_default": "メッセージを入力…",
     "send_tooltip": "送信",
     "stop_tooltip": "停止"
   },
@@ -91,21 +91,6 @@
     "list_open": "オープンなタスクを優先度順にまとめて",
     "summarize_today": "今日やったことを要約して",
     "plan_next": "次に取り組むことを計画して"
-  },
-  "context_anchor": {
-    "card_tooltip_issue_with_subtitle": "選択中のコンテキスト: {{label}} — {{subtitle}}",
-    "card_tooltip_issue": "選択中のコンテキスト: {{label}}",
-    "card_tooltip_project": "選択中のコンテキスト: プロジェクト \"{{label}}\"",
-    "tooltip_picker": "このチャットのコンテキストを選択",
-    "tooltip_selected_issue": "コンテキスト: {{label}} · クリックして変更",
-    "tooltip_selected_project": "コンテキスト: プロジェクト「{{label}}」· クリックして変更",
-    "aria_pick": "チャットコンテキストを選択",
-    "aria_clear": "チャットコンテキストをクリア",
-    "search_placeholder": "Issue または Project を検索…",
-    "section_current": "現在のページ",
-    "section_recent": "最近",
-    "section_search": "検索",
-    "search_empty": "一致する Issue / Project はありません"
   },
   "no_agent_banner": "チャットを始めるにはエージェントが必要です。",
   "offline_banner": {

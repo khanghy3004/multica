@@ -210,7 +210,7 @@ type fakeChat struct {
 	ensureErr        error
 	appendResult     AppendResult
 	appendErr        error
-	queries          *fakeQueries           // when set, runs the in-tx Mark
+	queries          *fakeQueries                  // when set, runs the in-tx Mark
 	beforeAppend     func(AppendUserMessageParams) // race-injection hook
 	calledEnsure     int
 	calledAppend     int
@@ -445,8 +445,14 @@ func TestDispatcher_PlainMessageEnqueuesTask(t *testing.T) {
 	if res.Outcome != OutcomeIngested {
 		t.Fatalf("expected ingested, got %q", res.Outcome)
 	}
-	if !res.TaskID.Valid || res.TaskID != enq.task.ID {
-		t.Fatalf("task id propagation broken: %+v", res.TaskID)
+	// The run trigger is debounced (MUL-2968): no TaskID is surfaced
+	// synchronously anymore, and with batching disabled the flush fires
+	// inline so the enqueue is observable right here.
+	if res.TaskID.Valid {
+		t.Fatalf("TaskID must not be set synchronously after debounce; got %+v", res.TaskID)
+	}
+	if enq.called != 1 {
+		t.Fatalf("expected exactly one EnqueueChatTask at flush; called=%d", enq.called)
 	}
 	// For p2p the session creator should be the bound user, not the
 	// installer — verifies the chat-type branch in Handle.
@@ -492,7 +498,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
-		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-dup"): {processed: true, token: validUUID(0xAB)}},
+		dedup:             map[string]*fakeDedupRow{seedDedupKey("msg-dup"): {processed: true, token: validUUID(0xAB)}},
 	}
 	chat := &fakeChat{
 		ensureID: validUUID(0x66),
@@ -542,7 +548,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
-		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
+		dedup:             map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -610,7 +616,7 @@ func TestDispatcher_DedupBeforeIdentityCheck(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBindingErr:    pgx.ErrNoRows, // unbound — would normally trigger OutcomeNeedsBinding
-		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
+		dedup:             map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -782,7 +788,24 @@ func TestDispatcher_EmptyTitleSurfacesError(t *testing.T) {
 	}
 }
 
-func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
+// captureReply is a FlushReply seam: it records every offline/archived
+// notice the dispatcher emits at flush time so tests can assert what the
+// user-facing card would say.
+type captureReply struct {
+	count   int
+	results []DispatchResult
+}
+
+func (c *captureReply) reply(_ context.Context, _ db.LarkInstallation, _ InboundMessage, res DispatchResult) {
+	c.count++
+	c.results = append(c.results, res)
+}
+
+func TestDispatcher_AgentOfflineRepliesAtFlush(t *testing.T) {
+	// With the run trigger debounced (MUL-2968), the agent-offline verdict
+	// is only known at flush time. Handle itself returns OutcomeIngested
+	// (the message is durable + ACKed); the offline notice is delivered
+	// through FlushReply. With batching disabled the flush fires inline.
 	sessionID := validUUID(0x66)
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
@@ -791,11 +814,13 @@ func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentNoRuntime}
+	cap := &captureReply{}
 	d := &Dispatcher{
 		Queries:     queries,
 		Chat:        chat,
 		Audit:       &fakeAudit{},
 		TaskService: enq,
+		FlushReply:  cap.reply,
 	}
 
 	res, err := d.Handle(context.Background(), InboundMessage{
@@ -808,15 +833,24 @@ func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("offline path should not return error, got %v", err)
 	}
-	if res.Outcome != OutcomeAgentOffline {
-		t.Fatalf("expected OutcomeAgentOffline, got %q", res.Outcome)
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("synchronous outcome must be ingested, got %q", res.Outcome)
 	}
-	if res.ChatSessionID != sessionID {
-		t.Fatalf("session id not propagated: %+v", res.ChatSessionID)
+	if enq.called != 1 {
+		t.Fatalf("flush must call EnqueueChatTask exactly once; called=%d", enq.called)
+	}
+	if cap.count != 1 {
+		t.Fatalf("expected exactly one flush reply; got %d", cap.count)
+	}
+	if cap.results[0].Outcome != OutcomeAgentOffline {
+		t.Fatalf("expected OutcomeAgentOffline at flush, got %q", cap.results[0].Outcome)
+	}
+	if cap.results[0].ChatSessionID != sessionID {
+		t.Fatalf("session id not propagated to flush reply: %+v", cap.results[0].ChatSessionID)
 	}
 }
 
-func TestDispatcher_AgentArchivedSurfacesDistinctOutcome(t *testing.T) {
+func TestDispatcher_AgentArchivedRepliesAtFlush(t *testing.T) {
 	sessionID := validUUID(0x66)
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
@@ -825,11 +859,13 @@ func TestDispatcher_AgentArchivedSurfacesDistinctOutcome(t *testing.T) {
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentArchived}
+	cap := &captureReply{}
 	d := &Dispatcher{
 		Queries:     queries,
 		Chat:        chat,
 		Audit:       &fakeAudit{},
 		TaskService: enq,
+		FlushReply:  cap.reply,
 	}
 
 	res, err := d.Handle(context.Background(), InboundMessage{
@@ -842,16 +878,21 @@ func TestDispatcher_AgentArchivedSurfacesDistinctOutcome(t *testing.T) {
 	if err != nil {
 		t.Fatalf("archived path should not return error, got %v", err)
 	}
-	if res.Outcome != OutcomeAgentArchived {
-		t.Fatalf("expected OutcomeAgentArchived, got %q", res.Outcome)
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("synchronous outcome must be ingested, got %q", res.Outcome)
+	}
+	if cap.count != 1 || cap.results[0].Outcome != OutcomeAgentArchived {
+		t.Fatalf("expected OutcomeAgentArchived at flush, got count=%d results=%+v", cap.count, cap.results)
 	}
 }
 
-func TestDispatcher_InfraFailureSurfacesError(t *testing.T) {
-	// A DB / load / create failure from TaskService.EnqueueChatTask is
-	// NOT a productizable state — the WS adapter must see a real
-	// error so it can retry or page, not an "offline" card that
-	// silently hides the outage.
+func TestDispatcher_FlushInfraFailureIsNotReplied(t *testing.T) {
+	// A DB / load / create failure from EnqueueChatTask is NOT a
+	// productizable state. The inbound frame was ACKed and the message is
+	// already durable, so Handle returns no error (nothing for the
+	// connector to retry against), the failure is logged, and NO
+	// offline/archived card is sent — a bogus "offline" card would
+	// silently hide the outage.
 	sessionID := validUUID(0x66)
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
@@ -861,25 +902,91 @@ func TestDispatcher_InfraFailureSurfacesError(t *testing.T) {
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
 	infraErr := errors.New("create chat task: connection refused")
 	enq := &fakeEnqueuer{err: infraErr}
+	cap := &captureReply{}
 	d := &Dispatcher{
 		Queries:     queries,
 		Chat:        chat,
 		Audit:       &fakeAudit{},
 		TaskService: enq,
+		FlushReply:  cap.reply,
 	}
 
-	_, err := d.Handle(context.Background(), InboundMessage{
+	res, err := d.Handle(context.Background(), InboundMessage{
 		AppID:        "ok",
 		ChatType:     ChatTypeP2P,
 		SenderOpenID: "ou_user_a",
 		Body:         "hi",
 		MessageID:    "msg-infra",
 	})
-	if err == nil {
-		t.Fatalf("infra failure should surface as error, got nil")
+	if err != nil {
+		t.Fatalf("flush infra failure must not surface from Handle, got %v", err)
 	}
-	if !errors.Is(err, infraErr) {
-		t.Fatalf("infra error should propagate (errors.Is), got %v", err)
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("synchronous outcome must be ingested, got %q", res.Outcome)
+	}
+	if enq.called != 1 {
+		t.Fatalf("flush must attempt EnqueueChatTask once; called=%d", enq.called)
+	}
+	if cap.count != 0 {
+		t.Fatalf("infra failure must not emit any offline/archived card; replies=%d", cap.count)
+	}
+}
+
+func TestDispatcher_DebounceCoalescesRunTrigger(t *testing.T) {
+	// Two messages in the same chat_session within the silence window must
+	// produce exactly ONE EnqueueChatTask (one agent run). The run reads
+	// the whole session history, so both messages are covered by it. This
+	// is the core MUL-2968 behaviour: "forward a transcript, then type a
+	// note" stops triggering two runs.
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
+	enq := &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}}
+	f := &fakeTimerFactory{}
+	d := &Dispatcher{Queries: queries, Chat: chat, Audit: &fakeAudit{}, TaskService: enq}
+	d.batcher = newTestBatcher(f)
+
+	send := func(id string) {
+		res, err := d.Handle(context.Background(), InboundMessage{
+			AppID:        "ok",
+			ChatType:     ChatTypeP2P,
+			SenderOpenID: "ou_user_a",
+			Body:         "hi",
+			MessageID:    id,
+		})
+		if err != nil {
+			t.Fatalf("unexpected error for %s: %v", id, err)
+		}
+		if res.Outcome != OutcomeIngested {
+			t.Fatalf("expected ingested for %s, got %q", id, res.Outcome)
+		}
+	}
+
+	send("m1")
+	send("m2")
+
+	// Both messages are durable + ACKed, but the run is still pending.
+	if enq.called != 0 {
+		t.Fatalf("run trigger must be debounced; enqueue called=%d before window closed", enq.called)
+	}
+	if got := d.batcher.pendingCount(); got != 1 {
+		t.Fatalf("both messages share one session window; pending=%d", got)
+	}
+
+	f.fireArmed() // window closes
+	if enq.called != 1 {
+		t.Fatalf("a coalesced burst must enqueue exactly once; called=%d", enq.called)
+	}
+
+	// A message arriving after the window fired is a new burst → new run.
+	send("m3")
+	f.fireArmed()
+	if enq.called != 2 {
+		t.Fatalf("a message after the window must start a new run; called=%d", enq.called)
 	}
 }
 
@@ -1051,34 +1158,41 @@ func TestDispatcher_AppendUserMessageFailureReleasesClaim(t *testing.T) {
 // committed) but a downstream step returns an error, the dispatcher
 // MUST mark the claim processed. Otherwise a replay would re-process
 // the message and write a second chat_message row.
+//
+// The run-trigger enqueue is now debounced and cannot fail synchronously,
+// so the synchronous downstream error this pins is the /issue create
+// path — the remaining step that runs after the chat_message is durable
+// and can still surface an error to the caller.
 func TestDispatcher_DurableErrorMarksClaim(t *testing.T) {
 	sessionID := validUUID(0x66)
+	inst := activeInstallation()
 	queries := &fakeQueries{
-		installationByApp: activeInstallation(),
+		installationByApp: inst,
 		userBinding:       boundUser(),
-		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: inst.AgentID},
 	}
 	chat := &fakeChat{
 		ensureID:     sessionID,
-		appendResult: AppendResult{},
+		appendResult: AppendResult{IssueCommand: &IssueCommand{Title: "boom"}},
 	}
-	infraErr := errors.New("create chat task: connection refused")
+	issueErr := errors.New("create issue: connection refused")
 	d := &Dispatcher{
-		Queries:     queries,
-		Chat:        chat,
-		Audit:       &fakeAudit{},
-		TaskService: &fakeEnqueuer{err: infraErr},
+		Queries:      queries,
+		Chat:         chat,
+		Audit:        &fakeAudit{},
+		IssueService: &fakeIssueCreator{err: issueErr},
+		TaskService:  &fakeEnqueuer{},
 	}
 
 	_, err := d.Handle(context.Background(), InboundMessage{
 		AppID:        "ok",
 		ChatType:     ChatTypeP2P,
 		SenderOpenID: "ou_user_a",
-		Body:         "hi",
+		Body:         "/issue boom",
 		MessageID:    "msg-durable-err",
 	})
-	if !errors.Is(err, infraErr) {
-		t.Fatalf("expected infra error to propagate, got %v", err)
+	if !errors.Is(err, issueErr) {
+		t.Fatalf("expected post-append durable error to propagate, got %v", err)
 	}
 	if queries.calledRelease != 0 {
 		t.Fatalf("must not release: chat_message already committed; calledRelease=%d", queries.calledRelease)
@@ -1190,7 +1304,7 @@ func TestDispatcher_StaleInFlightClaimReclaimable(t *testing.T) {
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
-		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-stale"): {processed: false, token: validUUID(0xAB)}},
+		dedup:             map[string]*fakeDedupRow{seedDedupKey("msg-stale"): {processed: false, token: validUUID(0xAB)}},
 		dedupReclaim:      true, // simulates received_at < now() - 60s
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}

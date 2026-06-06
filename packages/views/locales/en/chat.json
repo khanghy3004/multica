@@ -8,8 +8,8 @@
   "input": {
     "placeholder_no_agent": "Create an agent to start chatting",
     "placeholder_archived": "This session is archived",
-    "placeholder_named": "Tell {{name}} what to do…",
-    "placeholder_default": "Tell me what to do…",
+    "placeholder_named": "Message {{name}}…",
+    "placeholder_default": "Start a message…",
     "send_tooltip": "Send",
     "stop_tooltip": "Stop"
   },
@@ -94,21 +94,6 @@
     "list_open": "List my open tasks by priority",
     "summarize_today": "Summarize what I did today",
     "plan_next": "Plan what to work on next"
-  },
-  "context_anchor": {
-    "card_tooltip_issue_with_subtitle": "Selected context: {{label}} — {{subtitle}}",
-    "card_tooltip_issue": "Selected context: {{label}}",
-    "card_tooltip_project": "Selected context: project \"{{label}}\"",
-    "tooltip_picker": "Pick context for this chat",
-    "tooltip_selected_issue": "Context: {{label}} · Click to change",
-    "tooltip_selected_project": "Context: project \"{{label}}\" · Click to change",
-    "aria_pick": "Pick chat context",
-    "aria_clear": "Clear chat context",
-    "search_placeholder": "Search issues or projects…",
-    "section_current": "Current page",
-    "section_recent": "Recent",
-    "section_search": "Search",
-    "search_empty": "No matching issues or projects"
   },
   "no_agent_banner": "You need an agent to start chatting.",
   "offline_banner": {

@@ -14,7 +14,6 @@ export const DRAFT_NEW_SESSION = "__new__";
 const CHAT_WIDTH_KEY = "multica:chat:width";
 const CHAT_HEIGHT_KEY = "multica:chat:height";
 const CHAT_EXPANDED_KEY = "multica:chat:expanded";
-const SELECTED_CONTEXT_KEY = "multica:chat:selectedContext";
 /**
  * Open/closed preference, persisted globally (not per-workspace) — most users
  * have one habitual chat-panel preference across workspaces. Missing key =
@@ -48,30 +47,6 @@ function writeDrafts(storage: StorageAdapter, key: string, drafts: Record<string
   }
 }
 
-function readSelectedContext(storage: StorageAdapter, key: string): ContextAnchor | null {
-  const raw = storage.getItem(key);
-  if (!raw) return null;
-  try {
-    const parsed = JSON.parse(raw) as Partial<ContextAnchor> | null;
-    if (
-      parsed &&
-      (parsed.type === "issue" || parsed.type === "project") &&
-      typeof parsed.id === "string" &&
-      typeof parsed.label === "string"
-    ) {
-      return {
-        type: parsed.type,
-        id: parsed.id,
-        label: parsed.label,
-        subtitle: typeof parsed.subtitle === "string" ? parsed.subtitle : undefined,
-      };
-    }
-  } catch {
-    // Ignore corrupt local storage.
-  }
-  return null;
-}
-
 export const CHAT_MIN_W = 360;
 export const CHAT_MIN_H = 480;
 export const CHAT_DEFAULT_W = 380;
@@ -91,32 +66,12 @@ export interface ChatTimelineItem {
   output?: string;
 }
 
-/**
- * A derived "where I am" pointer — not stored, recomputed each render from
- * the current route + react-query cache. The type is exported because
- * consumers (buildAnchorMarkdown, chip props) share the same shape.
- */
-export interface ContextAnchor {
-  type: "issue" | "project";
-  /** UUID for `issue`, UUID for `project`. */
-  id: string;
-  /** Human-readable label: issue identifier (MUL-1) or project title. */
-  label: string;
-  /** Optional secondary text — issue title for issue anchors. */
-  subtitle?: string;
-}
-
 export interface ChatState {
   isOpen: boolean;
   activeSessionId: string | null;
   selectedAgentId: string | null;
   /** Drafts per session: sessionId (or DRAFT_NEW_SESSION) → markdown text. */
   inputDrafts: Record<string, string>;
-  /**
-   * Explicitly selected send context. Persisted per workspace, shared across
-   * chat sessions in that workspace, and intentionally not cleared after send.
-   */
-  selectedContext: ContextAnchor | null;
   /** Raw user-chosen size — no clamp applied. UI layer clamps at render time. */
   chatWidth: number;
   chatHeight: number;
@@ -128,7 +83,6 @@ export interface ChatState {
   /** sessionId accepts a real session UUID or DRAFT_NEW_SESSION. */
   setInputDraft: (sessionId: string, draft: string) => void;
   clearInputDraft: (sessionId: string) => void;
-  setSelectedContext: (context: ContextAnchor | null) => void;
   /** Persist raw size and auto-exit expanded mode. */
   setChatSize: (width: number, height: number) => void;
   setExpanded: (expanded: boolean) => void;
@@ -157,7 +111,6 @@ export function createChatStore(options: ChatStoreOptions) {
     activeSessionId: storage.getItem(wsKey(SESSION_STORAGE_KEY)),
     selectedAgentId: storage.getItem(wsKey(AGENT_STORAGE_KEY)),
     inputDrafts: readDrafts(storage, wsKey(DRAFTS_KEY)),
-    selectedContext: readSelectedContext(storage, wsKey(SELECTED_CONTEXT_KEY)),
     chatWidth: Number(storage.getItem(CHAT_WIDTH_KEY)) || CHAT_DEFAULT_W,
     chatHeight: Number(storage.getItem(CHAT_HEIGHT_KEY)) || CHAT_DEFAULT_H,
     isExpanded: storage.getItem(wsKey(CHAT_EXPANDED_KEY)) === "true",
@@ -192,12 +145,6 @@ export function createChatStore(options: ChatStoreOptions) {
       const next = { ...get().inputDrafts, [sessionId]: draft };
       writeDrafts(storage, wsKey(DRAFTS_KEY), next);
       set({ inputDrafts: next });
-    },
-    setSelectedContext: (context) => {
-      logger.info("setSelectedContext", { context });
-      if (context) storage.setItem(wsKey(SELECTED_CONTEXT_KEY), JSON.stringify(context));
-      else storage.removeItem(wsKey(SELECTED_CONTEXT_KEY));
-      set({ selectedContext: context });
     },
     clearInputDraft: (sessionId) => {
       const current = get().inputDrafts;
@@ -234,7 +181,6 @@ export function createChatStore(options: ChatStoreOptions) {
     const nextSession = storage.getItem(wsKey(SESSION_STORAGE_KEY));
     const nextAgent = storage.getItem(wsKey(AGENT_STORAGE_KEY));
     const nextDrafts = readDrafts(storage, wsKey(DRAFTS_KEY));
-    const nextSelectedContext = readSelectedContext(storage, wsKey(SELECTED_CONTEXT_KEY));
     logger.info("workspace rehydration", {
       prevSession: store.getState().activeSessionId,
       nextSession,
@@ -246,7 +192,6 @@ export function createChatStore(options: ChatStoreOptions) {
       activeSessionId: nextSession,
       selectedAgentId: nextAgent,
       inputDrafts: nextDrafts,
-      selectedContext: nextSelectedContext,
     });
   });
 

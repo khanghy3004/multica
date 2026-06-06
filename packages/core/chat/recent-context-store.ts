@@ -3,6 +3,7 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { defaultStorage } from "../platform/storage";
+import type { IssueStatus, ProjectStatus } from "../types";
 
 const MAX_RECENT_CONTEXTS = 20;
 const MAX_WORKSPACES = 50;
@@ -13,12 +14,17 @@ export type RecentContextType = "issue" | "project";
 export interface RecentContextEntry {
   type: RecentContextType;
   id: string;
+  label?: string;
+  subtitle?: string;
+  status?: IssueStatus;
+  projectStatus?: ProjectStatus;
+  icon?: string | null;
   visitedAt: number;
 }
 
 interface RecentContextState {
   byWorkspace: Record<string, RecentContextEntry[]>;
-  recordVisit: (wsId: string, entry: Pick<RecentContextEntry, "type" | "id">) => void;
+  recordVisit: (wsId: string, entry: Pick<RecentContextEntry, "type" | "id"> & Partial<Pick<RecentContextEntry, "label" | "subtitle" | "status" | "projectStatus" | "icon">>) => void;
   forgetContext: (wsId: string, entry: Pick<RecentContextEntry, "type" | "id">) => void;
   pruneWorkspaces: (activeWsIds: string[]) => void;
 }
@@ -39,6 +45,11 @@ export const useRecentContextStore = create<RecentContextState>()(
           const updated: RecentContextEntry = {
             type: entry.type,
             id: entry.id,
+            label: entry.label,
+            subtitle: entry.subtitle,
+            status: entry.status,
+            projectStatus: entry.projectStatus,
+            icon: entry.icon,
             visitedAt: Date.now(),
           };
           const nextBucket = [updated, ...filtered].slice(0, MAX_RECENT_CONTEXTS);

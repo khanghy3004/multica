@@ -3665,6 +3665,7 @@ func TestInjectRuntimeConfigCommentTriggerResumedNoDeltaRead(t *testing.T) {
 	ctx := TaskContextForEnv{
 		IssueID:             issueID,
 		TriggerCommentID:    triggerID,
+		TriggerThreadID:     "thread-root-1",
 		PriorSessionResumed: true,
 	}
 	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
@@ -3679,10 +3680,10 @@ func TestInjectRuntimeConfigCommentTriggerResumedNoDeltaRead(t *testing.T) {
 	for _, want := range []string{
 		"triggering comment is already included above",
 		"No other new comments on this issue since your last run",
-		"triggering comment ID / thread anchor",
+		"active thread anchor `thread-root-1` and triggering comment ID `" + triggerID + "`",
 		"If your reply depends on thread context",
 		"do not rely only on resumed session memory",
-		"multica issue comment list " + issueID + " --thread " + triggerID + " --tail 30 --output json",
+		"multica issue comment list " + issueID + " --thread thread-root-1 --tail 30 --output json",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("comment-triggered resumed Workflow missing %q\n---\n%s", want, s)

@@ -42,15 +42,11 @@ import {
   useMarkChatSessionRead,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { useChatStore, type ContextAnchor } from "@multica/core/chat";
+import { useChatStore } from "@multica/core/chat";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
-import {
-  ContextAnchorButton,
-  ContextAnchorCard,
-  buildAnchorMarkdown,
-} from "./context-anchor";
 import { ChatResizeHandles } from "./chat-resize-handles";
+import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
 import { createLogger } from "@multica/core/logger";
 import type { Agent, ChatMessage, ChatMessagesPage, ChatPendingTask, ChatSession, PendingChatTasksResponse } from "@multica/core/types";
@@ -59,12 +55,6 @@ import { useT } from "../../i18n";
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
 const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
-
-export function buildOutgoingChatContent(content: string, selectedContext: ContextAnchor | null): string {
-  return selectedContext
-    ? `${buildAnchorMarkdown(selectedContext)}\n\n${content}`
-    : content;
-}
 
 function seedChatMessagesPageCache(
   qc: ReturnType<typeof useQueryClient>,
@@ -218,8 +208,6 @@ export function ChatWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
   }, [isOpen, activeSessionId, currentHasUnread]);
 
-  const selectedContext = useChatStore((s) => s.selectedContext);
-
   const { uploadWithToast } = useFileUpload(api);
 
   // Lazy-creates a chat_session the first time the user needs an id —
@@ -296,7 +284,7 @@ export function ChatWindow() {
         return;
       }
 
-      const finalContent = buildOutgoingChatContent(content, selectedContext);
+      const finalContent = content;
 
       const isNewSession = !activeSessionId;
 
@@ -305,7 +293,6 @@ export function ChatWindow() {
         isNewSession,
         agentId: activeAgent.id,
         contentLength: finalContent.length,
-        hasAnchor: !!selectedContext,
         attachmentCount: attachmentIds?.length ?? 0,
       });
 
@@ -375,7 +362,6 @@ export function ChatWindow() {
     [
       activeSessionId,
       activeAgent,
-      selectedContext,
       ensureSession,
       qc,
       setActiveSession,
@@ -477,6 +463,8 @@ export function ChatWindow() {
     transformOrigin: "bottom right",
     pointerEvents: isOpen ? "auto" : "none",
   };
+
+  const contextItems = useChatContextItems(wsId);
 
   return (
     <motion.div
@@ -586,8 +574,8 @@ export function ChatWindow() {
       {/* Status banner above the input — single mutually-exclusive slot.
        *  Priority: no-agent > offline / unstable. Agent presence is the
        *  hard prerequisite (you can't send anything without one), so it
-       *  always wins over a presence hint. ContextAnchorCard stays in
-       *  topSlot because that's per-message context, not session state.
+       *  always wins over a presence hint. Recent issue/project navigation
+       *  lives in the input action row; it is not message/session state.
        *
        *  We key off `noAgent` (the resolved-empty state) rather than
        *  `!activeAgent`, so the loading window between mount and the
@@ -608,7 +596,6 @@ export function ChatWindow() {
         disabled={isSessionArchived}
         noAgent={noAgent}
         agentName={activeAgent?.name}
-        topSlot={<ContextAnchorCard />}
         leftAdornment={
           <AgentDropdown
             agents={availableAgents}
@@ -617,7 +604,7 @@ export function ChatWindow() {
             onSelect={handleSelectAgent}
           />
         }
-        rightAdornment={<ContextAnchorButton />}
+        contextItems={contextItems}
       />
     </motion.div>
   );

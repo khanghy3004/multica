@@ -33,6 +33,29 @@ describe("useRecentContextStore.recordVisit", () => {
     for (let i = 0; i < 25; i++) recordVisit("ws-a", { type: "issue", id: `issue-${i}` });
     expect(useRecentContextStore.getState().byWorkspace["ws-a"]).toHaveLength(20);
   });
+
+  it("stores a local display snapshot for recent entries", () => {
+    const { recordVisit } = useRecentContextStore.getState();
+    recordVisit("ws-a", {
+      type: "issue",
+      id: "issue-1",
+      label: "MUL-1",
+      subtitle: "Fix login redirect",
+      status: "todo",
+      projectStatus: "in_progress",
+      icon: "🚀",
+    });
+
+    expect(useRecentContextStore.getState().byWorkspace["ws-a"]?.[0]).toMatchObject({
+      type: "issue",
+      id: "issue-1",
+      label: "MUL-1",
+      subtitle: "Fix login redirect",
+      status: "todo",
+      projectStatus: "in_progress",
+      icon: "🚀",
+    });
+  });
 });
 
 describe("useRecentContextStore.forgetContext", () => {

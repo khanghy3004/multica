@@ -175,6 +175,11 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	// shifts a line cannot rot this test into pinning a stale lie.
 	mustContain := []string{
 		"multica issue pull-requests <issue-id> --output json",
+		"Default for code-changing issue work",
+		"open or update a PR before posting the final Multica issue comment",
+		"This is a default, not",
+		"Use a routable issue key in the PR title, body, or branch",
+		"include the PR URL when a PR exists",
 		"Closes MUL-2759",
 		"--status backlog",
 		"pr_url",

@@ -30,6 +30,9 @@ const TEST_RESOURCES = { en: { common: enCommon, chat: enChat } };
 const dropHandlers = vi.hoisted(() => ({
   onDrop: null as null | ((files: File[]) => void),
 }));
+const editorProps = vi.hoisted(() => ({
+  last: null as null | Record<string, unknown>,
+}));
 
 vi.mock("../../editor", () => ({
   useFileDropZone: ({ onDrop }: { onDrop: (files: File[]) => void }) => {
@@ -38,19 +41,23 @@ vi.mock("../../editor", () => ({
   },
   FileDropOverlay: () => null,
   ContentEditor: forwardRef(function MockContentEditor(
-    {
-      defaultValue,
-      onUpdate,
-      placeholder,
-      onUploadFile,
-    }: {
+    props: {
       defaultValue?: string;
       onUpdate?: (md: string) => void;
       placeholder?: string;
       onUploadFile?: (file: File) => Promise<UploadResult | null>;
+      mentionMode?: string;
+      mentionContextItems?: unknown[];
     },
     ref: React.Ref<unknown>,
   ) {
+    const {
+      defaultValue,
+      onUpdate,
+      placeholder,
+      onUploadFile,
+    } = props;
+    editorProps.last = props as unknown as Record<string, unknown>;
     const valueRef = useRef<string>(defaultValue ?? "");
     const uploadingRef = useRef(0);
     useImperativeHandle(ref, () => ({
@@ -123,6 +130,19 @@ function renderInput(props: Partial<React.ComponentProps<typeof ChatInput>> = {}
   );
   return { onSend, onUploadFile };
 }
+
+describe("ChatInput @ context wiring", () => {
+  it("configures chat @ with current/recent issue/project context", () => {
+    const contextItems = [
+      { id: "issue-1", label: "MUL-1", type: "issue" as const, group: "current" as const },
+    ];
+
+    renderInput({ contextItems });
+
+    expect(editorProps.last?.mentionMode).toBe("context");
+    expect(editorProps.last?.mentionContextItems).toBe(contextItems);
+  });
+});
 
 describe("ChatInput attachment wiring", () => {
   it("routes dropped files through the editor's upload handler", async () => {
@@ -224,7 +244,7 @@ describe("ChatInput attachment wiring", () => {
     // only. Probe by counting buttons: with no upload, only the submit
     // button is in the action row.
     const buttons = screen.getAllByRole("button");
-    // The agent picker / context anchor adornments may render zero buttons
+    // The agent picker may render zero buttons
     // in this test (no leftAdornment passed). So a single button = submit.
     expect(buttons.length).toBe(1);
   });

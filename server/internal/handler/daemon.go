@@ -1281,6 +1281,10 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if task.TriggerCommentID.Valid {
 			if comment, err := h.Queries.GetComment(r.Context(), task.TriggerCommentID); err == nil {
 				resp.TriggerCommentContent = comment.Content
+				resp.TriggerThreadID = uuidToString(comment.ID)
+				if comment.ParentID.Valid {
+					resp.TriggerThreadID = uuidToString(comment.ParentID)
+				}
 				resp.TriggerAuthorType = comment.AuthorType
 				switch comment.AuthorType {
 				case "agent":
@@ -1388,32 +1392,40 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 			}
-			// Load the latest user message for the chat prompt, plus any
-			// attachments linked to that exact message. Without the structured
-			// attachment list the agent only sees the markdown URL in
-			// `ChatMessage` — fine for vision models inline but unusable when
-			// the agent wants to `multica attachment download <id>` (URL is
-			// signed and 30-min expiring on private CDN).
+			// Build the chat prompt from EVERY user message that has arrived
+			// since the agent's last reply — not just the most recent one. A
+			// short-window debounce (MUL-2968) can land several user messages
+			// before a single run fires; the agent resumes its prior session
+			// and only learns of new input through resp.ChatMessage, so
+			// delivering just the latest message would silently drop the
+			// earlier ones (e.g. "看上海天气" then "还有青岛" → only Qingdao
+			// answered). The unanswered set is the trailing run of user
+			// messages after the last assistant message (every completed or
+			// failed run writes an assistant row, so that anchor advances each
+			// turn). Attachments are collected from each included message so
+			// the agent can `multica attachment download <id>` — the markdown
+			// URL alone is signed and 30-min expiring on the private CDN.
 			if msgs, err := h.Queries.ListChatMessages(r.Context(), cs.ID); err == nil && len(msgs) > 0 {
-				for i := len(msgs) - 1; i >= 0; i-- {
-					if msgs[i].Role == "user" {
-						resp.ChatMessage = msgs[i].Content
-						if atts, attErr := h.Queries.ListAttachmentsByChatMessage(r.Context(), db.ListAttachmentsByChatMessageParams{
-							ChatMessageID: msgs[i].ID,
-							WorkspaceID:   parseUUID(resp.WorkspaceID),
-						}); attErr == nil && len(atts) > 0 {
-							resp.ChatMessageAttachments = make([]ChatAttachmentMeta, len(atts))
-							for j, a := range atts {
-								resp.ChatMessageAttachments[j] = ChatAttachmentMeta{
-									ID:          uuidToString(a.ID),
-									Filename:    a.Filename,
-									ContentType: a.ContentType,
-								}
-							}
+				unanswered := trailingUserMessages(msgs)
+				parts := make([]string, 0, len(unanswered))
+				for _, m := range unanswered {
+					if strings.TrimSpace(m.Content) != "" {
+						parts = append(parts, m.Content)
+					}
+					if atts, attErr := h.Queries.ListAttachmentsByChatMessage(r.Context(), db.ListAttachmentsByChatMessageParams{
+						ChatMessageID: m.ID,
+						WorkspaceID:   parseUUID(resp.WorkspaceID),
+					}); attErr == nil && len(atts) > 0 {
+						for _, a := range atts {
+							resp.ChatMessageAttachments = append(resp.ChatMessageAttachments, ChatAttachmentMeta{
+								ID:          uuidToString(a.ID),
+								Filename:    a.Filename,
+								ContentType: a.ContentType,
+							})
 						}
-						break
 					}
 				}
+				resp.ChatMessage = strings.Join(parts, "\n\n")
 			}
 		}
 	}
@@ -1660,6 +1672,25 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("task claimed by runtime", "task_id", uuidToString(task.ID), "runtime_id", runtimeID, "agent_id", uuidToString(task.AgentID), "prior_session", resp.PriorSessionID)
 	writeJSON(w, http.StatusOK, map[string]any{"task": resp})
+}
+
+// trailingUserMessages returns the run of user messages after the last
+// assistant message in a chronologically-ordered chat history — the set the
+// agent has NOT yet replied to. The agent resumes its prior session and only
+// learns of new input through the claim response's chat_message, so a single
+// run that covers a debounced burst (MUL-2968) must deliver every one of
+// these, not just the latest. Every completed or failed run writes an
+// assistant row, so the anchor advances one turn at a time; the result is the
+// whole slice on the first turn and exactly the new message(s) thereafter.
+func trailingUserMessages(msgs []db.ChatMessage) []db.ChatMessage {
+	start := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != "user" {
+			start = i + 1
+			break
+		}
+	}
+	return msgs[start:]
 }
 
 // ListPendingTasksByRuntime returns queued/dispatched tasks for a runtime.

@@ -811,7 +811,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   useEffect(() => {
     if (issue) {
       recordVisit(wsId, issue.id);
-      recordRecentContext(wsId, { type: "issue", id: issue.id });
+      recordRecentContext(wsId, {
+        type: "issue",
+        id: issue.id,
+        label: issue.identifier,
+        subtitle: issue.title,
+        status: issue.status,
+      });
     }
   }, [issue?.id, wsId]); // eslint-disable-line react-hooks/exhaustive-deps
 

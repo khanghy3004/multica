@@ -10,7 +10,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // These tests cover the pure-Go halves of RegistrationService —
@@ -220,6 +222,65 @@ func TestRandomSessionIDUnique(t *testing.T) {
 		}
 		seen[id] = struct{}{}
 	}
+}
+
+// TestRegistrationServicePublishInstalledEmitsCreatedEvent pins the
+// MUL-3059 fix: a completed install must publish lark_installation:created
+// at the row-write point so every workspace client refreshes its
+// connection badge without a page reload. The bug was that this event only
+// fired from the HTTP status-poll handler, so any surface that wasn't the
+// polling install dialog stayed stale until a manual refresh. The exact
+// shape (type, workspace, system actor, installation_id payload) is what
+// the SubscribeAll fanout and the frontend lark_installation-prefix
+// invalidation depend on.
+func TestRegistrationServicePublishInstalledEmitsCreatedEvent(t *testing.T) {
+	bus := events.New()
+	var caught []events.Event
+	bus.Subscribe(protocol.EventLarkInstallationCreated, func(e events.Event) {
+		caught = append(caught, e)
+	})
+
+	svc := newRegistrationServiceForTest(t)
+	svc.SetEventBus(bus)
+
+	ws := uuidFromStringSvc(t, "11111111-1111-1111-1111-111111111111")
+	inst := uuidFromStringSvc(t, "22222222-2222-2222-2222-222222222222")
+	svc.publishInstalled(ws, inst)
+
+	// Exactly one — guards against a future re-introduction of the
+	// now-removed second emit in the status-poll handler.
+	if len(caught) != 1 {
+		t.Fatalf("expected exactly 1 lark_installation:created event, got %d", len(caught))
+	}
+	got := caught[0]
+	if got.Type != protocol.EventLarkInstallationCreated {
+		t.Errorf("type = %q, want %q", got.Type, protocol.EventLarkInstallationCreated)
+	}
+	if got.WorkspaceID != uuidString(ws) {
+		t.Errorf("workspace_id = %q, want %q", got.WorkspaceID, uuidString(ws))
+	}
+	if got.ActorType != "system" {
+		t.Errorf("actor_type = %q, want \"system\"", got.ActorType)
+	}
+	payload, ok := got.Payload.(map[string]any)
+	if !ok {
+		t.Fatalf("payload type = %T, want map[string]any", got.Payload)
+	}
+	if payload["installation_id"] != uuidString(inst) {
+		t.Errorf("installation_id = %v, want %q", payload["installation_id"], uuidString(inst))
+	}
+}
+
+// TestRegistrationServicePublishInstalledNilBusIsNoOp pins that an install
+// still completes when no bus is wired — the bus is optional (SetEventBus
+// is never called in self-host builds that disable realtime), so the
+// publish must be a silent no-op rather than a nil-deref panic.
+func TestRegistrationServicePublishInstalledNilBusIsNoOp(t *testing.T) {
+	svc := newRegistrationServiceForTest(t) // no SetEventBus
+	svc.publishInstalled(
+		uuidFromStringSvc(t, "33333333-3333-3333-3333-333333333333"),
+		uuidFromStringSvc(t, "44444444-4444-4444-4444-444444444444"),
+	)
 }
 
 // fakeInstallerBinder records BindInstallerTx calls for tests that

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -37,6 +39,13 @@ type InboundMessage struct {
 	// message needs an HTTP round-trip to expand (merge_forward) while
 	// the dispatcher itself stays msg_type-agnostic and only reads Body.
 	MessageType string
+
+	// CreateTime is the trigger message's creation time (epoch
+	// milliseconds, as Lark sends it). The enricher uses it to anchor the
+	// group recent-context window to the moment of the @-mention — it
+	// fetches the conversation up to this time rather than whatever is
+	// newest when the (slightly later) prefetch HTTP call runs.
+	CreateTime string
 
 	// ParentID is the message_id of the message this one quote-replies
 	// to, taken verbatim from the receive event's `parent_id`. Empty
@@ -111,9 +120,15 @@ type DispatchResult struct {
 	InstallationID pgtype.UUID
 	ChatSessionID  pgtype.UUID
 	SenderOpenID   OpenID
-	TaskID         pgtype.UUID
-	IssueID        pgtype.UUID
-	IssueNumber    int32
+	// TaskID was populated when the dispatcher enqueued the chat task
+	// synchronously. With the short-window debounce (MUL-2968) the run is
+	// triggered asynchronously at flush time, so Handle no longer knows a
+	// task id — this field is left zero for the chat path. Kept on the
+	// struct because the emit contract still carries it for any future
+	// synchronous enqueue (e.g. /issue follow-ups).
+	TaskID      pgtype.UUID
+	IssueID     pgtype.UUID
+	IssueNumber int32
 	// IssueIdentifier is the workspace-qualified human key for the
 	// created issue ("MUL-42"). Populated only when /issue produced a
 	// new row. The OutcomeReplier uses this verbatim in the "Created
@@ -191,6 +206,63 @@ type Dispatcher struct {
 	Audit        AuditLogger
 	IssueService IssueCreator
 	TaskService  ChatTaskEnqueuer
+
+	// FlushReply emits the offline/archived notice that EnqueueChatTask
+	// now produces only at debounce-flush time. Before MUL-2968 those
+	// outcomes were returned synchronously from Handle and the hub's
+	// OutcomeReplier sent the card; with the run trigger debounced, the
+	// verdict is not known until the window closes, so the dispatcher
+	// drives the reply itself via this callback. Wired to
+	// OutcomeReplier.Reply in production; nil disables the notice (the
+	// message is still durable, only the card is skipped).
+	FlushReply FlushReplyFunc
+
+	// Logger is used by the detached flush path, which cannot return
+	// errors to a caller and must log them. Defaults to slog.Default().
+	Logger *slog.Logger
+
+	// batcher debounces the per-session run trigger. Installed via
+	// EnableRunBatching in production; when nil (unit tests / degenerate
+	// config) the run fires inline with no debounce — a zero-length
+	// window, not a separate code path.
+	batcher *pendingBatcher
+}
+
+// FlushReplyFunc matches OutcomeReplier.Reply so the production replier can
+// be injected directly. It is invoked from the debounced flush goroutine
+// to deliver the agent-offline / agent-archived notice.
+type FlushReplyFunc func(ctx context.Context, inst db.LarkInstallation, msg InboundMessage, res DispatchResult)
+
+// chatRunFlushTimeout bounds the detached flush (session reload +
+// EnqueueChatTask + offline/archived notice). The flush runs on its own
+// fresh context because the inbound request ctx is long cancelled by the
+// time the window closes.
+const chatRunFlushTimeout = 10 * time.Second
+
+// EnableRunBatching installs the in-memory debouncer in front of the
+// per-session run trigger. Call once at boot. A non-positive window uses
+// DefaultChatRunBatchWindow. Without this, the dispatcher triggers runs
+// inline (used by unit tests that assert the immediate effect).
+func (d *Dispatcher) EnableRunBatching(window time.Duration) {
+	d.batcher = newPendingBatcher(window)
+}
+
+// FlushPendingRuns drains every still-pending run trigger immediately and
+// blocks until in-flight flushes finish. The hub calls this on graceful
+// shutdown, after inbound delivery has stopped, so a normal restart does
+// not silently drop a window's worth of messages. No-op when batching is
+// disabled.
+func (d *Dispatcher) FlushPendingRuns() {
+	if d.batcher != nil {
+		d.batcher.FlushAll()
+	}
+}
+
+func (d *Dispatcher) logger() *slog.Logger {
+	if d.Logger != nil {
+		return d.Logger
+	}
+	return slog.Default()
 }
 
 // Handle processes one inbound Lark message end-to-end. It never
@@ -467,35 +539,96 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 		}
 	}
 
-	// 8. Enqueue the chat task that triggers the agent run. Only the
-	//    productizable rejections from EnqueueChatTask (agent
-	//    archived, agent has no runtime configured) are mapped to a
-	//    user-visible Outcome; real infra failures bubble up as
-	//    errors so the WS adapter can retry or page.
+	// 8. Debounce the run trigger. The chat_message + dedup Mark are
+	//    already durable; the agent run reads the WHOLE session at
+	//    execution time, so a burst of messages in this session is
+	//    collapsed into ONE run by deferring EnqueueChatTask behind a
+	//    short silence window (MUL-2968). The synchronous outcome is
+	//    OutcomeIngested with NO TaskID — the task row is created later,
+	//    at flush. EnqueueChatTask's productizable verdicts (agent
+	//    offline / archived) and infra errors are now handled inside the
+	//    flush (see flushChatRun), not returned here.
 	//
-	//    Note: a daemon that's merely disconnected is NOT an error
-	//    here. As long as agent.runtime_id is set, the chat task is
-	//    enqueued and waits for the daemon to claim it on next
-	//    online; this path returns OutcomeIngested with a TaskID.
+	//    Note: a daemon that's merely disconnected is NOT an error. As
+	//    long as agent.runtime_id is set, the chat task is enqueued at
+	//    flush and waits for the daemon to claim it on next online.
+	d.scheduleRun(inst, msg, sessionID)
+	return res, postAppendFinalize, nil
+}
+
+// scheduleRun hands the per-session run trigger to the debouncer (or fires
+// it inline when batching is disabled). The flush closure captures this
+// message's installation + InboundMessage so the offline/archived notice,
+// if any, targets the right chat; the latest message in a window wins.
+func (d *Dispatcher) scheduleRun(inst db.LarkInstallation, msg InboundMessage, sessionID pgtype.UUID) {
+	flush := func() { d.flushChatRun(inst, msg, sessionID) }
+	if d.batcher == nil {
+		// Batching disabled (unit tests / degenerate config): trigger the
+		// run immediately. Production always installs a batcher via
+		// EnableRunBatching, so this branch does not run in prod.
+		flush()
+		return
+	}
+	d.batcher.Schedule(keyForSession(sessionID), flush)
+}
+
+// flushChatRun is the debounced run-trigger. It runs once per silence
+// window per chat session, detached from the inbound path (on its own
+// goroutine and fresh context). It reloads the session, enqueues exactly
+// one chat task for the whole window's worth of messages, and — because
+// EnqueueChatTask's offline/archived verdict is only known here now —
+// emits the corresponding notice itself via FlushReply. Errors cannot be
+// returned to a caller (the message is already ACKed and durable), so they
+// are logged: a failed enqueue leaves the message in the session to be
+// picked up by the next message's run.
+func (d *Dispatcher) flushChatRun(inst db.LarkInstallation, msg InboundMessage, sessionID pgtype.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), chatRunFlushTimeout)
+	defer cancel()
+
 	session, err := d.Queries.GetChatSession(ctx, sessionID)
 	if err != nil {
-		return DispatchResult{}, postAppendFinalize, fmt.Errorf("reload chat session: %w", err)
+		d.logger().Error("lark dispatcher: flush reload chat session failed",
+			"chat_session_id", uuidString(sessionID),
+			"err", err.Error(),
+		)
+		return
 	}
-	task, err := d.TaskService.EnqueueChatTask(ctx, session)
-	if err != nil {
+	if _, err := d.TaskService.EnqueueChatTask(ctx, session); err != nil {
 		switch {
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
-			res.Outcome = OutcomeAgentOffline
-			return res, postAppendFinalize, nil
+			d.emitFlushReply(ctx, inst, msg, sessionID, OutcomeAgentOffline)
 		case errors.Is(err, service.ErrChatTaskAgentArchived):
-			res.Outcome = OutcomeAgentArchived
-			return res, postAppendFinalize, nil
+			d.emitFlushReply(ctx, inst, msg, sessionID, OutcomeAgentArchived)
 		default:
-			return DispatchResult{}, postAppendFinalize, fmt.Errorf("enqueue chat task: %w", err)
+			// Infra failure (DB down, etc.). Nothing to retry against —
+			// the inbound frame was ACKed long ago. Log so the gap is
+			// visible; the next message in this session re-triggers a run
+			// that will read this message too.
+			d.logger().Error("lark dispatcher: flush enqueue chat task failed",
+				"chat_session_id", uuidString(sessionID),
+				"err", err.Error(),
+			)
 		}
 	}
-	res.TaskID = task.ID
-	return res, postAppendFinalize, nil
+}
+
+// emitFlushReply delivers an offline/archived notice for a flushed run.
+func (d *Dispatcher) emitFlushReply(ctx context.Context, inst db.LarkInstallation, msg InboundMessage, sessionID pgtype.UUID, outcome Outcome) {
+	if d.FlushReply == nil {
+		return
+	}
+	d.FlushReply(ctx, inst, msg, DispatchResult{
+		Outcome:        outcome,
+		InstallationID: inst.ID,
+		ChatSessionID:  sessionID,
+		SenderOpenID:   msg.SenderOpenID,
+	})
+}
+
+// keyForSession is the batcher key. chat_session_id is a globally-unique
+// UUID, so it alone disambiguates sessions across installations.
+func keyForSession(sessionID pgtype.UUID) string {
+	return string(sessionID.Bytes[:])
 }
 
 // applyFinalize flips the in-flight claim row to its terminal state,

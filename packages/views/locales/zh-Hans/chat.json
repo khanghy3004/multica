@@ -7,8 +7,8 @@
   "input": {
     "placeholder_no_agent": "创建一个智能体后才能开始对话",
     "placeholder_archived": "此会话已归档",
-    "placeholder_named": "告诉 {{name}} 该做什么...",
-    "placeholder_default": "告诉我该做什么...",
+    "placeholder_named": "给 {{name}} 发消息…",
+    "placeholder_default": "输入消息…",
     "send_tooltip": "发送",
     "stop_tooltip": "停止"
   },
@@ -91,21 +91,6 @@
     "list_open": "按优先级列出我未完成的任务",
     "summarize_today": "总结一下我今天做了什么",
     "plan_next": "规划接下来该做什么"
-  },
-  "context_anchor": {
-    "card_tooltip_issue_with_subtitle": "已选上下文：{{label}} —— {{subtitle}}",
-    "card_tooltip_issue": "已选上下文：{{label}}",
-    "card_tooltip_project": "已选上下文：项目 \"{{label}}\"",
-    "tooltip_picker": "选择这次聊天的上下文",
-    "tooltip_selected_issue": "上下文：{{label}} · 点击更换",
-    "tooltip_selected_project": "上下文：项目「{{label}}」· 点击更换",
-    "aria_pick": "选择聊天上下文",
-    "aria_clear": "清除聊天上下文",
-    "search_placeholder": "搜索 Issue 或 Project…",
-    "section_current": "当前页面",
-    "section_recent": "最近浏览",
-    "section_search": "搜索",
-    "search_empty": "没有匹配的 Issue 或 Project"
   },
   "no_agent_banner": "需要先有一个智能体才能开始对话。",
   "offline_banner": {

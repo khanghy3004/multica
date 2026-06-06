@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RegistrationSessionStatus is the discriminated state a `begin`
@@ -101,14 +103,21 @@ func (c RegistrationServiceConfig) withDefaults() RegistrationServiceConfig {
 // into Postgres would add a migration + GC sweep without delivering any
 // product capability the user can re-use across server restarts.
 type RegistrationService struct {
-	cfg       RegistrationServiceConfig
-	client    *RegistrationClient
-	api       APIClient
-	queries   *db.Queries
-	tx        TxStarter
-	installs  *InstallationService
-	binder    InstallerBinder
+	cfg         RegistrationServiceConfig
+	client      *RegistrationClient
+	api         APIClient
+	queries     *db.Queries
+	tx          TxStarter
+	installs    *InstallationService
+	binder      InstallerBinder
 	authQueries authQueriesAdapter
+
+	// bus is optional. When wired (SetEventBus), a successful install
+	// publishes lark_installation:created the moment the row commits, so
+	// every workspace client refreshes its connection badge without
+	// waiting for a browser to poll the status endpoint to success. Nil
+	// is valid — install still works, it just won't push the WS frame.
+	bus *events.Bus
 
 	mu       sync.Mutex
 	sessions map[string]*registrationSession
@@ -167,6 +176,37 @@ func NewRegistrationService(
 	}, nil
 }
 
+// SetEventBus wires the optional event bus AFTER construction so the
+// six positional constructor-validation cases stay untouched and the
+// bus remains nil-safe. With it set, finishSuccess publishes
+// lark_installation:created at the row-commit point — the authoritative
+// moment of truth — instead of relying on the HTTP status-poll handler
+// to emit it only when a browser happens to poll to success.
+func (s *RegistrationService) SetEventBus(bus *events.Bus) {
+	s.bus = bus
+}
+
+// publishInstalled emits lark_installation:created on the optional bus.
+// Mirrors the revoke path (RevokeLarkInstallation publishes
+// lark_installation:revoked from its handler): both events broadcast to
+// the whole workspace via the SubscribeAll fanout, and the frontend
+// invalidates larkKeys.installations on the lark_installation prefix, so
+// every mounted surface (agent Integrations tab, inspector, Settings)
+// refreshes its connection badge with no page reload. Covers fresh
+// installs and revoked→active re-installs alike — both ride the same
+// UpsertLarkInstallation write. Nil-safe.
+func (s *RegistrationService) publishInstalled(workspaceID, installationID pgtype.UUID) {
+	if s.bus == nil {
+		return
+	}
+	s.bus.Publish(events.Event{
+		Type:        protocol.EventLarkInstallationCreated,
+		WorkspaceID: uuidString(workspaceID),
+		ActorType:   "system",
+		Payload:     map[string]any{"installation_id": uuidString(installationID)},
+	})
+}
+
 // registrationSession is the in-memory state for one in-flight install.
 type registrationSession struct {
 	id          string
@@ -179,6 +219,13 @@ type registrationSession struct {
 	qrCodeURL  string
 	interval   time.Duration
 	expiresAt  time.Time
+	// region is the cloud the install was started against. The polling
+	// loop reads it as the initial value of its `region` local; if the
+	// poll stream surfaces a tenant_brand mid-flow, the local flips to
+	// RegionLark, but the session field stays at what the user picked
+	// (it is informational — the authoritative cloud flows back through
+	// finishSuccess via the loop's local).
+	region Region
 
 	mu             sync.Mutex
 	status         RegistrationSessionStatus
@@ -241,6 +288,16 @@ type BeginInstallParams struct {
 	WorkspaceID pgtype.UUID
 	AgentID     pgtype.UUID
 	InitiatorID pgtype.UUID
+	// Region picks which cloud's accounts host the device-flow begins
+	// against — Feishu (mainland, accounts.feishu.cn) or Lark
+	// (international, accounts.larksuite.com). The user picks this
+	// explicitly in the UI ("Bind to Feishu" vs "Bind to Lark") so the
+	// QR rendered up front already targets the right cloud and Lark
+	// users do not have to hit a Feishu URL first and rely on the
+	// tenant-brand auto-switch. Empty / unknown values fall back to
+	// Feishu, matching RegionOrDefault, so existing callers without
+	// the new field keep working.
+	Region Region
 }
 
 // BeginInstallResult is the public payload the handler echoes to the
@@ -248,9 +305,9 @@ type BeginInstallParams struct {
 // poll status; we deliberately do NOT echo the device_code or the
 // polling interval (which is internal scheduling state).
 type BeginInstallResult struct {
-	SessionID         string
-	QRCodeURL         string
-	ExpiresInSeconds  int
+	SessionID           string
+	QRCodeURL           string
+	ExpiresInSeconds    int
 	PollIntervalSeconds int
 }
 
@@ -283,7 +340,14 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 		return BeginInstallResult{}, fmt.Errorf("lark registration: agent not in workspace: %w", err)
 	}
 
-	begin, err := s.client.Begin(ctx, botNamePreset(agent.Name))
+	// Normalize the requested region: empty / unknown → Feishu, the same
+	// back-compat invariant the storage layer uses (RegionOrDefault).
+	// This both protects the device-flow client from a bogus value
+	// from the handler AND means a pre-region caller (omitting the
+	// field) keeps getting the historical mainland-first behaviour.
+	region := RegionOrDefault(string(p.Region))
+
+	begin, err := s.client.Begin(ctx, botNamePreset(agent.Name), region)
 	if err != nil {
 		return BeginInstallResult{}, fmt.Errorf("lark registration: begin: %w", err)
 	}
@@ -303,6 +367,7 @@ func (s *RegistrationService) BeginInstall(ctx context.Context, p BeginInstallPa
 		qrCodeURL:   begin.QRCodeURL,
 		interval:    begin.Interval,
 		expiresAt:   now.Add(begin.ExpiresIn),
+		region:      region,
 		status:      RegistrationStatusPending,
 	}
 	s.mu.Lock()
@@ -367,6 +432,22 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 	}
 	domain := sess.domain
 	deviceCode := sess.deviceCode
+	// region tracks which cloud this install belongs to. It starts at
+	// whatever the user picked at begin-time (Feishu by default; the
+	// frontend now exposes an explicit Lark CTA that begins on
+	// accounts.larksuite.com directly). The SwitchedDomain branch
+	// below is still honored as a safety net — if a user clicks the
+	// Feishu CTA but actually authorizes with a Lark-international
+	// account, the poll stream surfaces tenant_brand="lark" and we
+	// flip the local accordingly. So at finishSuccess time `region`
+	// is the authoritative per-install cloud, derived first from the
+	// user's UI choice and then from the protocol's role-based switch
+	// — never by string-matching accounts hostnames (so staging/mock
+	// domains classify correctly too).
+	region := sess.region
+	if region == "" {
+		region = RegionFeishu
+	}
 
 	for {
 		select {
@@ -403,12 +484,21 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 			// behavior. Lark emits the brand hint exactly once on the
 			// transition poll and the credential-bearing response
 			// lands on the next call to the new domain.
+			//
+			// Both directions are honored (feishu→lark and lark→feishu)
+			// so the split-CTA UI's "wrong entry" path recovers
+			// regardless of which CTA the user picked. The new region
+			// rides on the same PollResult so we never have to
+			// re-derive it from the host string here — staging / mock
+			// accounts hosts then classify correctly without
+			// hostname-prefix matching.
 			domain = res.SwitchedDomain
-			s.cfg.Logger.Info("lark registration: switched to lark-international domain",
-				"session_id", sess.id, "domain", domain)
+			region = res.SwitchedRegion
+			s.cfg.Logger.Info("lark registration: switched cloud after tenant-brand mismatch",
+				"session_id", sess.id, "domain", domain, "region", string(region))
 			continue
 		case res.ClientID != "" && res.ClientSecret != "":
-			s.finishSuccess(ctx, sess, res)
+			s.finishSuccess(ctx, sess, res, region)
 			return
 		case res.Err != nil:
 			reason := RegistrationReasonProtocol
@@ -433,8 +523,11 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 // finishSuccess runs the post-poll finalization: bot info lookup +
 // installation insert + installer binding, all in a single DB
 // transaction.
-func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrationSession, res *PollResult) {
-	creds := InstallationCredentials{AppID: res.ClientID, AppSecret: res.ClientSecret}
+func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrationSession, res *PollResult, region Region) {
+	// Carry the detected region onto the credentials so the GetBotInfo
+	// call below hits the right open-platform host: a Lark-international
+	// install must reach open.larksuite.com, not the Feishu default.
+	creds := InstallationCredentials{AppID: res.ClientID, AppSecret: res.ClientSecret, Region: region}
 	info, err := s.api.GetBotInfo(ctx, creds)
 	if err != nil {
 		s.cfg.Logger.Warn("lark registration: bot info failed",
@@ -478,6 +571,7 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 		BotOpenID:          string(info.OpenID),
 		BotUnionID:         textOrNull(info.UnionID),
 		InstallerUserID:    sess.initiatorID,
+		Region:             string(region),
 	})
 	if err != nil {
 		s.cfg.Logger.Warn("lark registration: upsert installation",
@@ -505,6 +599,10 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 		return
 	}
 	sess.markSuccess(inst.ID, s.gcDeadline())
+	// Publish at the commit point so the connection badge updates on every
+	// workspace client without a page refresh — not only on the tab that
+	// happens to poll the status endpoint to success.
+	s.publishInstalled(sess.workspaceID, inst.ID)
 	s.cfg.Logger.Info("lark registration: install complete",
 		"session_id", sess.id,
 		"workspace_id", uuidString(sess.workspaceID),
