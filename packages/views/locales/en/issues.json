@@ -293,6 +293,8 @@
   "agent_activity": {
     "hover_header_one": "{{count}} agent working",
     "hover_header_other": "{{count}} agents working",
+    "hover_header_queued_one": "{{count}} agent queued",
+    "hover_header_queued_other": "{{count}} agents queued",
     "status_running": "Working",
     "status_queued": "Queued",
     "chip_label": "working",

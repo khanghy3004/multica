@@ -1186,6 +1186,23 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Stored task initiator: chat tasks persist the real message sender at
+	// enqueue time (web: request user; Lark: inbound sender — NOT the chat
+	// session creator, which for Lark groups is the installer). When set, it is
+	// the authoritative initiator for this run; resolve the live name/email so
+	// the daemon can render `## Task Initiator`. Comment-triggered tasks instead
+	// resolve their initiator from the triggering comment's author below; the
+	// two paths are mutually exclusive (a task is either chat or issue-bound).
+	// See MUL-2645.
+	if task.InitiatorUserID.Valid {
+		resp.InitiatorType = "member"
+		resp.InitiatorID = uuidToString(task.InitiatorUserID)
+		if u, err := h.Queries.GetUser(r.Context(), task.InitiatorUserID); err == nil {
+			resp.InitiatorName = u.Name
+			resp.InitiatorEmail = u.Email
+		}
+	}
+
 	// Include workspace ID and repos so the daemon can set up worktrees.
 	//
 	// Repo precedence: project-bound github_repo resources override workspace
@@ -1196,6 +1213,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	if task.IssueID.Valid {
 		if issue, err := h.Queries.GetIssue(r.Context(), task.IssueID); err == nil {
 			resp.WorkspaceID = uuidToString(issue.WorkspaceID)
+			resp.ThreadName = issue.Title
 
 			// Squad-leader briefing injection: when the issue is assigned
 			// to a squad and the claiming agent is that squad's current
@@ -1286,11 +1304,22 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					resp.TriggerThreadID = uuidToString(comment.ParentID)
 				}
 				resp.TriggerAuthorType = comment.AuthorType
+				// The triggering comment's author is the task initiator — the
+				// real requester behind this run. Surface it (type + id + name,
+				// plus email for members) so a workspace-visible agent can
+				// attribute the request to the right person instead of to the
+				// runtime owner. Same lookups as the display name above; we just
+				// also capture the id and email. See MUL-2645.
+				resp.InitiatorType = comment.AuthorType
+				if comment.AuthorID.Valid {
+					resp.InitiatorID = uuidToString(comment.AuthorID)
+				}
 				switch comment.AuthorType {
 				case "agent":
 					if comment.AuthorID.Valid {
 						if a, err := h.Queries.GetAgent(r.Context(), comment.AuthorID); err == nil {
 							resp.TriggerAuthorName = a.Name
+							resp.InitiatorName = a.Name
 						}
 					}
 				case "member":
@@ -1299,6 +1328,8 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					if comment.AuthorID.Valid {
 						if u, err := h.Queries.GetUser(r.Context(), comment.AuthorID); err == nil {
 							resp.TriggerAuthorName = u.Name
+							resp.InitiatorName = u.Name
+							resp.InitiatorEmail = u.Email
 						}
 					}
 				}
@@ -1362,6 +1393,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if cs, err := h.Queries.GetChatSession(r.Context(), task.ChatSessionID); err == nil {
 			resp.WorkspaceID = uuidToString(cs.WorkspaceID)
 			resp.ChatSessionID = uuidToString(cs.ID)
+			resp.ThreadName = cs.Title
 			if ws, err := h.Queries.GetWorkspace(r.Context(), cs.WorkspaceID); err == nil && ws.Repos != nil {
 				var repos []RepoData
 				if json.Unmarshal(ws.Repos, &repos) == nil && len(repos) > 0 {
@@ -1426,6 +1458,9 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 					}
 				}
 				resp.ChatMessage = strings.Join(parts, "\n\n")
+				if strings.TrimSpace(resp.ThreadName) == "" {
+					resp.ThreadName = resp.ChatMessage
+				}
 			}
 		}
 	}
@@ -1442,6 +1477,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 			}
 			if ap, err := h.Queries.GetAutopilot(r.Context(), run.AutopilotID); err == nil {
 				resp.AutopilotTitle = ap.Title
+				resp.ThreadName = ap.Title
 				if ap.Description.Valid {
 					resp.AutopilotDescription = ap.Description.String
 				}
@@ -1469,6 +1505,7 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 		if json.Unmarshal(task.Context, &qc) == nil && qc.Type == service.QuickCreateContextType {
 			hasQuickCreate = true
 			resp.QuickCreatePrompt = qc.Prompt
+			resp.ThreadName = qc.Prompt
 			resp.WorkspaceID = qc.WorkspaceID
 
 			// When the user picked a project in the modal, surface its title
@@ -1953,7 +1990,8 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 }
 
 // GetTaskStatus returns the current status of a task.
-// Used by the daemon to check whether a task was cancelled mid-execution.
+// Used by the daemon to detect terminal/interruption signals (cancelled,
+// failed, completed) while a task is executing mid-flight.
 func (h *Handler) GetTaskStatus(w http.ResponseWriter, r *http.Request) {
 	taskID := chi.URLParam(r, "taskId")
 

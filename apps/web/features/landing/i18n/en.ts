@@ -293,6 +293,34 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.18",
+        date: "2026-06-08",
+        title: "Web Notifications and /note Command",
+        changes: [],
+        features: [
+          "The web app can now show native browser notification banners, making workspace activity easier to catch while Multica is in the background",
+          "Comments that start with /note can record context without waking the assigned agent, so teams can leave coordination notes without triggering a run",
+          "Antigravity is now available as a per-agent model choice for daemon-run agents",
+          "The CLI now explains common request failures in plain language and points to the next action",
+        ],
+        improvements: [
+          "The Issue header now shows the live agent signal in a tighter, easier-to-scan place",
+          "Runtime screens are quieter and more accurate, with fewer unnecessary wakeups, clearer task names, and the right CLI version on each row",
+          "Self-hosted installs now generate a random Postgres password by default and carry version details into Docker builds",
+          "Command search now shows assignee avatars, and reply inputs use the same submit behavior as comments",
+          "Built-in skills with longer descriptions now load more reliably",
+        ],
+        fixes: [
+          "Swimlane filters now apply correctly",
+          "Mobile workspace switching now shows workspace logos reliably and uses clearer English copy",
+          "Desktop update and transcript dialogs no longer act on windows or pages that have already closed",
+          "Runtime deletion now cleans archived squads and pauses autopilots as part of the same teardown",
+          "Daemon runs now surface self-restart failures, stop local agents when terminal tasks are ended from the server, and clean stale branches during repository maintenance",
+          "Self-hosted WebSocket connections work correctly behind proxies that set X-Forwarded-Host",
+          "Project list headers keep their compact blurred styling",
+        ],
+      },
+      {
         version: "0.3.17",
         date: "2026-06-05",
         title: "Feishu Bot Group Chat, Usage Scheduling, and CLI Updates",
