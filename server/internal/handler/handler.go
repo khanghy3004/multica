@@ -98,6 +98,7 @@ type Handler struct {
 	TxStarter             txStarter
 	Hub                   *realtime.Hub
 	DaemonHub             *daemonws.Hub
+	TerminalBridge        *TerminalBridge
 	Bus                   *events.Bus
 	TaskService           *service.TaskService
 	IssueService          *service.IssueService

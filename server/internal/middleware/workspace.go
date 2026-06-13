@@ -10,6 +10,20 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// RoleTerminal is the deny-by-default member role: its holder may reach only
+// the routes that explicitly list it (the web terminal and its bootstrap
+// reads). Every other workspace route 403s the role.
+const RoleTerminal = "terminal"
+
+func containsRole(roles []string, target string) bool {
+	for _, r := range roles {
+		if r == target {
+			return true
+		}
+	}
+	return false
+}
+
 // Context keys for workspace-scoped request data.
 type contextKey int
 
@@ -241,6 +255,17 @@ func buildMiddleware(queries *db.Queries, resolve workspaceResolver, roles []str
 			})
 			if err != nil {
 				writeError(w, http.StatusNotFound, "workspace not found")
+				return
+			}
+
+			// Deny-by-default for the terminal-only role: it may pass a
+			// check ONLY when "terminal" is explicitly listed in the allowed
+			// roles. An empty roles list (RequireWorkspaceMember) does NOT
+			// admit it, so the role is locked out of every route that does not
+			// opt it in. This is the hard enforcement behind the
+			// terminal-only access model.
+			if member.Role == RoleTerminal && !containsRole(roles, RoleTerminal) {
+				writeError(w, http.StatusForbidden, "terminal-only role: access restricted to the terminal")
 				return
 			}
 

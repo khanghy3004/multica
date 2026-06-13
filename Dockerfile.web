@@ -45,7 +45,11 @@ ENV NEXT_PUBLIC_WS_URL=$NEXT_PUBLIC_WS_URL
 ENV NEXT_PUBLIC_APP_VERSION=$NEXT_PUBLIC_APP_VERSION
 ENV STANDALONE=true
 
-# Build the web app (standalone output for minimal runtime)
+# Build the web app (standalone output for minimal runtime).
+# Cap the V8 heap below the Docker VM's memory ceiling so a low-RAM builder
+# (e.g. Docker Desktop at ~4 GiB) GC-pressures instead of getting OOM-killed
+# by the kernel mid-build.
+ENV NODE_OPTIONS=--max-old-space-size=6144
 RUN pnpm --filter @multica/web build
 
 # --- Runtime ---

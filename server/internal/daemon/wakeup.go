@@ -120,6 +120,12 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	writerDone := make(chan struct{})
 	go d.runWSWriter(conn, writes, writerDone)
 
+	// Expose this connection's write channel to the terminal manager so PTY
+	// output can flow back to the server. Detach (killing live sessions) is
+	// done in the teardown defer below, before close(writes), so no pump
+	// goroutine can send on a closed channel.
+	d.terminals.setSink(writes)
+
 	heartbeatCtx, cancelHeartbeat := context.WithCancel(ctx)
 	hbDone := make(chan struct{})
 	go func() {
@@ -145,6 +151,10 @@ func (d *Daemon) runTaskWakeupConnection(ctx context.Context, runtimeIDs []strin
 	defer func() {
 		cancelHeartbeat()
 		<-hbDone
+		// Detach the terminal sink and kill live sessions BEFORE closing the
+		// writes channel: setSink(nil) clears the manager's reference under
+		// its mutex, so no pump goroutine can race a send onto a closed chan.
+		d.terminals.setSink(nil)
 		close(writes)
 		<-writerDone
 	}()
@@ -264,7 +274,9 @@ func (d *Daemon) handleWSHeartbeatAck(ctx context.Context, ack *HeartbeatRespons
 }
 
 func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<- taskWakeup) error {
-	conn.SetReadLimit(64 * 1024)
+	// 1 MiB: terminal:stdin frames carry base64-encoded paste payloads that can
+	// exceed the original 64 KiB wakeup/heartbeat ceiling.
+	conn.SetReadLimit(1024 * 1024)
 	for {
 		_, raw, err := conn.ReadMessage()
 		if err != nil {
@@ -295,6 +307,31 @@ func (d *Daemon) readTaskWakeupMessages(conn *websocket.Conn, taskWakeups chan<-
 				continue
 			}
 			d.handleWSHeartbeatAck(context.Background(), &ack)
+		case protocol.EventTerminalOpen:
+			var p protocol.TerminalOpenPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				d.logger.Debug("terminal open invalid payload", "error", err)
+				continue
+			}
+			d.terminals.handleOpen(p)
+		case protocol.EventTerminalStdin:
+			var p protocol.TerminalStdinPayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				continue
+			}
+			d.terminals.handleStdin(p)
+		case protocol.EventTerminalResize:
+			var p protocol.TerminalResizePayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				continue
+			}
+			d.terminals.handleResize(p)
+		case protocol.EventTerminalClose:
+			var p protocol.TerminalClosePayload
+			if err := json.Unmarshal(msg.Payload, &p); err != nil {
+				continue
+			}
+			d.terminals.handleClose(p)
 		}
 	}
 }

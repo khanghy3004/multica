@@ -37,6 +37,10 @@ catalog:
   # Icons
   lucide-react: "^1.0.1"
 
+  # Interactive terminal (browser ↔ daemon PTY relay)
+  "@xterm/xterm": "^5.5.0"
+  "@xterm/addon-fit": "^0.10.0"
+
   # i18n
   i18next: "^26.0.8"
   react-i18next: "^17.0.6"

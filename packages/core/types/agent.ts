@@ -532,6 +532,20 @@ export interface DashboardUsageByAgent {
   task_count: number;
 }
 
+// Per-user terminal token totals. Powers the "Terminal usage (by user)" table
+// on the Usage page.
+export interface DashboardTerminalUsageByUser {
+  user_id: string;
+  name: string;
+  email: string;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+  total_tokens: number;
+  session_count: number;
+}
+
 // Per-agent total terminal-task run-time + counts. Powers the workspace
 // dashboard's "time by agent" list. failed_count is a subset of
 // task_count (failed tasks still contribute to total_seconds because

@@ -27,6 +27,7 @@ import {
   Plus,
   Check,
   BookOpenText,
+  SquareTerminal,
   SquarePen,
   CircleUser,
   FolderKanban,
@@ -40,6 +41,7 @@ import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
 import { StatusIcon } from "../issues/components/status-icon";
+import { isDesktopShell } from "../platform";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import { openCreateIssueWithPreference } from "@multica/core/issues/stores/create-mode-store";
 import {
@@ -114,6 +116,7 @@ type NavKey =
   | "squads"
   | "usage"
   | "runtimes"
+  | "terminal"
   | "skills"
   | "settings";
 
@@ -128,6 +131,7 @@ type NavLabelKey =
   | "squads"
   | "usage"
   | "runtimes"
+  | "terminal"
   | "skills"
   | "settings";
 
@@ -147,6 +151,7 @@ const workspaceNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[]
 
 const configureNav: { key: NavKey; labelKey: NavLabelKey; icon: typeof Inbox }[] = [
   { key: "runtimes", labelKey: "runtimes", icon: Monitor },
+  { key: "terminal", labelKey: "terminal", icon: SquareTerminal },
   { key: "skills", labelKey: "skills", icon: BookOpenText },
   { key: "settings", labelKey: "settings", icon: Settings },
 ];
@@ -707,7 +712,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupLabel>{t(($) => $.sidebar.configure_group)}</SidebarGroupLabel>
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
-                {configureNav.map((item) => {
+                {configureNav
+                  // The terminal relay is web-only: it authenticates the WS
+                  // upgrade via the same-origin auth cookie, which the desktop
+                  // shell (token + first-message auth) does not provide.
+                  .filter((item) => item.key !== "terminal" || !isDesktopShell())
+                  .map((item) => {
                   const href = p[item.key]();
                   const isActive = isNavActive(pathname, href);
                   return (

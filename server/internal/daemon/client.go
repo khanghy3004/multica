@@ -229,6 +229,23 @@ func (c *Client) ReportTaskUsage(ctx context.Context, taskID string, usage []Tas
 	}, nil)
 }
 
+// ReportTerminalUsage reports the CUMULATIVE per-model token totals for one
+// terminal claude session. The backend upserts with REPLACE semantics, so
+// re-reporting the same totals (e.g. after a daemon restart re-reads the
+// transcript) is idempotent.
+func (c *Client) ReportTerminalUsage(ctx context.Context, sessionID, workspaceID, userID, model string, input, output, cacheRead, cacheWrite int64) error {
+	return c.postJSON(ctx, "/api/daemon/terminal-usage", map[string]any{
+		"session_id":         sessionID,
+		"workspace_id":       workspaceID,
+		"user_id":            userID,
+		"model":              model,
+		"input_tokens":       input,
+		"output_tokens":      output,
+		"cache_read_tokens":  cacheRead,
+		"cache_write_tokens": cacheWrite,
+	}, nil)
+}
+
 func (c *Client) FailTask(ctx context.Context, taskID, errMsg, sessionID, workDir, failureReason string) error {
 	body := map[string]any{"error": errMsg}
 	if sessionID != "" {

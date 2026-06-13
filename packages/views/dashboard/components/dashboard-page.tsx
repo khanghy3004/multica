@@ -19,7 +19,9 @@ import {
   dashboardUsageByAgentOptions,
   dashboardAgentRunTimeOptions,
   dashboardRunTimeDailyOptions,
+  dashboardTerminalUsageByUserOptions,
 } from "@multica/core/dashboard";
+import type { DashboardTerminalUsageByUser } from "@multica/core/types";
 import { useCustomPricingStore } from "@multica/core/runtimes/custom-pricing-store";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { PageHeader } from "../../layout/page-header";
@@ -98,6 +100,7 @@ const EMPTY_DAILY: import("@multica/core/types").DashboardUsageDaily[] = [];
 const EMPTY_BY_AGENT: import("@multica/core/types").DashboardUsageByAgent[] = [];
 const EMPTY_RUNTIME: import("@multica/core/types").DashboardAgentRunTime[] = [];
 const EMPTY_RUNTIME_DAILY: import("@multica/core/types").DashboardRunTimeDaily[] = [];
+const EMPTY_TERMINAL_USAGE: DashboardTerminalUsageByUser[] = [];
 
 function fmtMoney(n: number): string {
   if (n >= 100) return `$${n.toFixed(0)}`;
@@ -203,11 +206,17 @@ export function DashboardPage() {
   const runTimeDailyQuery = useQuery(
     dashboardRunTimeDailyOptions(wsId, chartFetchDays, projectId, viewTZ),
   );
+  // Terminal usage is per-user and not project-scoped, so it ignores the
+  // project filter.
+  const terminalUsageQuery = useQuery(
+    dashboardTerminalUsageByUserOptions(wsId, days, viewTZ),
+  );
 
   const dailyUsage = dailyQuery.data ?? EMPTY_DAILY;
   const byAgentUsage = byAgentQuery.data ?? EMPTY_BY_AGENT;
   const runTimeRows = runTimeQuery.data ?? EMPTY_RUNTIME;
   const runTimeDailyRows = runTimeDailyQuery.data ?? EMPTY_RUNTIME_DAILY;
+  const terminalUsage = terminalUsageQuery.data ?? EMPTY_TERMINAL_USAGE;
 
   // Daily-aggregation surfaces (cost/tokens/time/tasks KPIs and the Daily
   // trend chart) re-scope to the user-selected `days` even when we
@@ -233,7 +242,8 @@ export function DashboardPage() {
     dailyQuery.isLoading ||
     byAgentQuery.isLoading ||
     runTimeQuery.isLoading ||
-    runTimeDailyQuery.isLoading;
+    runTimeDailyQuery.isLoading ||
+    terminalUsageQuery.isLoading;
 
   // Four independent rollups, but the empty-state is one decision — only
   // show "no data yet" when ALL came back empty so a project with tokens
@@ -243,7 +253,8 @@ export function DashboardPage() {
     dailyUsage.length === 0 &&
     byAgentUsage.length === 0 &&
     runTimeRows.length === 0 &&
-    runTimeDailyRows.length === 0;
+    runTimeDailyRows.length === 0 &&
+    terminalUsage.length === 0;
 
   // Cost / token math — re-derived when usage, days, or pricings change.
   const totals = useMemo(
@@ -415,6 +426,10 @@ export function DashboardPage() {
                 agents={agents}
                 lessThanMinuteLabel={t(($) => $.duration.less_than_minute)}
               />
+
+              {/* Per-user terminal token usage — interactive `claude` terminal
+                  sessions, attributed to the human who opened them. */}
+              <TerminalUsageTable rows={terminalUsage} days={days} />
             </>
           )}
         </div>
@@ -730,6 +745,77 @@ function Leaderboard({
                     className={`text-right text-xs tabular-nums ${sortBy === "tasks" ? "font-medium text-foreground" : "text-muted-foreground"}`}
                   >
                     {row.taskCount}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// Per-user terminal token usage. Tokens only (no cost), sorted by total tokens
+// desc — the row order the query already returns.
+function TerminalUsageTable({
+  rows,
+  days,
+}: {
+  rows: DashboardTerminalUsageByUser[];
+  days: number;
+}) {
+  const { t } = useT("usage");
+  const maxTotal = useMemo(
+    () => rows.reduce((m, r) => Math.max(m, r.total_tokens), 0),
+    [rows],
+  );
+
+  return (
+    <div className="rounded-lg border bg-card">
+      <div className="flex flex-wrap items-center justify-between gap-3 border-b px-4 pt-4 pb-3">
+        <h4 className="text-sm font-semibold">{t(($) => $.terminal_usage.title)}</h4>
+        <span className="text-xs text-muted-foreground">
+          {t(($) => $.terminal_usage.caption, { count: rows.length, days })}
+        </span>
+      </div>
+      {rows.length === 0 ? (
+        <p className="px-4 py-8 text-center text-xs text-muted-foreground">
+          {t(($) => $.terminal_usage.no_data)}
+        </p>
+      ) : (
+        <>
+          <div className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_6rem_5rem] items-center gap-3 border-b px-4 py-2 text-xs font-medium text-muted-foreground">
+            <span>{t(($) => $.terminal_usage.header_user)}</span>
+            <span />
+            <span className="text-right">{t(($) => $.terminal_usage.header_tokens)}</span>
+            <span className="text-right">{t(($) => $.terminal_usage.header_sessions)}</span>
+          </div>
+          <div className="divide-y">
+            {rows.map((row) => {
+              const pct = maxTotal > 0 ? (row.total_tokens / maxTotal) * 100 : 0;
+              return (
+                <div
+                  key={row.user_id}
+                  className="grid grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_6rem_5rem] items-center gap-3 px-4 py-2"
+                >
+                  <div className="flex min-w-0 items-center gap-2">
+                    <ActorAvatar actorType="member" actorId={row.user_id} size={22} />
+                    <span className="truncate text-sm font-medium">
+                      {row.name || row.email || row.user_id}
+                    </span>
+                  </div>
+                  <div className="relative h-2 overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-chart-1 transition-[width] duration-300 ease-out"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </div>
+                  <div className="text-right text-xs font-medium tabular-nums text-foreground">
+                    {formatTokens(row.total_tokens)}
+                  </div>
+                  <div className="text-right text-xs tabular-nums text-muted-foreground">
+                    {row.session_count}
                   </div>
                 </div>
               );

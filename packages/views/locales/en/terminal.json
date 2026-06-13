@@ -1,0 +1,16 @@
+{
+  "title": "Terminal",
+  "description": "Open an interactive Claude Code session on a connected machine.",
+  "pick_machine": "Choose a machine",
+  "no_machines": "No machines are online. Start the Multica daemon on your machine to connect.",
+  "connecting": "Connecting…",
+  "connected": "Connected",
+  "disconnected": "Disconnected",
+  "reconnect": "Reconnect",
+  "session_ended": "Session ended.",
+  "online": "online",
+  "offline": "offline",
+  "unsupported": "Your browser does not support the terminal.",
+  "enter_fullscreen": "Fullscreen",
+  "exit_fullscreen": "Exit fullscreen"
+}

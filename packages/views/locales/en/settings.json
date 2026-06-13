@@ -374,6 +374,10 @@
       "member": {
         "label": "Member",
         "description": "Create and work on issues"
+      },
+      "terminal": {
+        "label": "Terminal",
+        "description": "Web terminal only — no other access"
       }
     }
   }

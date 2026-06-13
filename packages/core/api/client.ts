@@ -48,6 +48,7 @@ import type {
   RuntimeUsageByHour,
   DashboardUsageDaily,
   DashboardUsageByAgent,
+  DashboardTerminalUsageByUser,
   DashboardAgentRunTime,
   DashboardRunTimeDaily,
   RuntimeUpdate,
@@ -139,6 +140,7 @@ import {
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardUsageByAgentListSchema,
+  DashboardTerminalUsageByUserListSchema,
   DashboardUsageDailyListSchema,
   EMPTY_AGENT_TEMPLATE_DETAIL,
   EMPTY_AGENT_TEMPLATE_SUMMARY_LIST,
@@ -854,6 +856,14 @@ export class ApiClient {
     return this.fetch(`/api/runtimes?${search}`);
   }
 
+  // Workspace-scoped runtime list for the terminal machine picker. Distinct
+  // endpoint from listRuntimes because it is one of the few routes the
+  // terminal-only role is permitted to call (the header-based /api/runtimes
+  // group denies that role by default).
+  async listTerminalMachines(workspaceId: string): Promise<AgentRuntime[]> {
+    return this.fetch(`/api/workspaces/${workspaceId}/terminal/machines`);
+  }
+
   async listCloudRuntimeNodes(
     params?: ListCloudRuntimeNodesParams,
   ): Promise<CloudRuntimeNode[]> {
@@ -1167,6 +1177,21 @@ export class ApiClient {
       DashboardUsageByAgentListSchema,
       [],
       { endpoint: "GET /api/dashboard/usage/by-agent" },
+    );
+  }
+
+  async getDashboardTerminalUsageByUser(
+    params: { days?: number; tz?: string },
+  ): Promise<DashboardTerminalUsageByUser[]> {
+    const search = new URLSearchParams();
+    if (params.days) search.set("days", String(params.days));
+    if (params.tz) search.set("tz", params.tz);
+    const raw = await this.fetch<unknown>(`/api/dashboard/usage/terminal-by-user?${search}`);
+    return parseWithFallback<DashboardTerminalUsageByUser[]>(
+      raw,
+      DashboardTerminalUsageByUserListSchema,
+      [],
+      { endpoint: "GET /api/dashboard/usage/terminal-by-user" },
     );
   }
 

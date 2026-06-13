@@ -299,6 +299,10 @@
       "member": {
         "label": "멤버",
         "description": "이슈 생성 및 작업"
+      },
+      "terminal": {
+        "label": "터미널",
+        "description": "웹 터미널만 사용 — 다른 접근 불가"
       }
     }
   },

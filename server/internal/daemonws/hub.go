@@ -80,6 +80,21 @@ type MessageKindRecorder interface {
 	RecordDaemonWSMessageReceived(kind string)
 }
 
+// TerminalFrameHandler is invoked for each inbound terminal:* frame a daemon
+// sends back (stdout/exit/error). The bridge routes it to the browser session
+// keyed by the payload's session_id. A nil handler drops terminal frames.
+//
+// We route on runtime_id, not daemon_id: a daemon authenticates the WS with a
+// user/CLI token, so identity.DaemonID is frequently empty — the only reliable
+// per-connection key the hub indexes is the runtime set (byRuntime). The
+// session_id (a server-minted UUID handed only to the target daemon) is the
+// real routing capability for inbound frames.
+type TerminalFrameHandler func(msgType string, payload json.RawMessage)
+
+// TerminalDisconnectHandler is invoked for each runtime whose last connection
+// dropped, so the bridge can close any browser terminals bound to it.
+type TerminalDisconnectHandler func(runtimeID string)
+
 // Hub keeps daemon WebSocket connections indexed by runtime ID. Messages are
 // best-effort wakeup hints; the daemon still uses HTTP claim for correctness.
 type Hub struct {
@@ -91,6 +106,10 @@ type Hub struct {
 
 	hbMu        sync.RWMutex
 	onHeartbeat HeartbeatHandler
+
+	termMu         sync.RWMutex
+	onTerminal     TerminalFrameHandler
+	onTerminalGone TerminalDisconnectHandler
 
 	kindMu       sync.RWMutex
 	kindRecorder MessageKindRecorder
@@ -129,6 +148,72 @@ func (h *Hub) heartbeatHandler() HeartbeatHandler {
 	h.hbMu.RLock()
 	defer h.hbMu.RUnlock()
 	return h.onHeartbeat
+}
+
+// SetTerminalHandlers installs the callbacks used to relay terminal:* frames
+// from daemons to browser sessions and to clean up on daemon disconnect.
+// Either may be nil to disable that path.
+func (h *Hub) SetTerminalHandlers(frame TerminalFrameHandler, gone TerminalDisconnectHandler) {
+	if h == nil {
+		return
+	}
+	h.termMu.Lock()
+	h.onTerminal = frame
+	h.onTerminalGone = gone
+	h.termMu.Unlock()
+}
+
+func (h *Hub) terminalFrameHandler() TerminalFrameHandler {
+	h.termMu.RLock()
+	defer h.termMu.RUnlock()
+	return h.onTerminal
+}
+
+func (h *Hub) terminalDisconnectHandler() TerminalDisconnectHandler {
+	if h == nil {
+		return nil
+	}
+	h.termMu.RLock()
+	defer h.termMu.RUnlock()
+	return h.onTerminalGone
+}
+
+// SendToRuntime delivers a frame to a single live connection serving
+// runtimeID. Returns false when no connection exists or the candidate's send
+// buffer is full. Used by the terminal bridge to push open/stdin/resize/close
+// frames to the daemon hosting that runtime.
+func (h *Hub) SendToRuntime(runtimeID string, frame []byte) bool {
+	if h == nil || runtimeID == "" {
+		return false
+	}
+	h.mu.RLock()
+	var target *client
+	for c := range h.byRuntime[runtimeID] {
+		target = c
+		break
+	}
+	h.mu.RUnlock()
+	if target == nil {
+		return false
+	}
+	select {
+	case target.send <- frame:
+		return true
+	default:
+		return false
+	}
+}
+
+// RuntimeConnected reports whether at least one live connection serves
+// runtimeID. The terminal bridge uses this to fail an open fast with a clear
+// error rather than spawning a session that can never reach the daemon.
+func (h *Hub) RuntimeConnected(runtimeID string) bool {
+	if h == nil || runtimeID == "" {
+		return false
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.byRuntime[runtimeID]) > 0
 }
 
 // SetMessageKindRecorder installs an optional callback fired exactly once per
@@ -324,17 +409,29 @@ func (h *Hub) unregister(c *client) {
 		return
 	}
 	delete(h.clients, c)
+	var emptiedRuntimes []string
 	for runtimeID := range c.runtimes {
 		if conns := h.byRuntime[runtimeID]; conns != nil {
 			delete(conns, c)
 			if len(conns) == 0 {
 				delete(h.byRuntime, runtimeID)
+				emptiedRuntimes = append(emptiedRuntimes, runtimeID)
 			}
 		}
 	}
 	close(c.send)
 	total := len(h.clients)
 	h.mu.Unlock()
+
+	// Notify the terminal bridge for each runtime whose last connection just
+	// dropped, so it can close any browser terminals bound to it.
+	if len(emptiedRuntimes) > 0 {
+		if fn := h.terminalDisconnectHandler(); fn != nil {
+			for _, rid := range emptiedRuntimes {
+				fn(rid)
+			}
+		}
+	}
 
 	M.DisconnectsTotal.Add(1)
 	M.ActiveConnections.Add(-1)
@@ -391,6 +488,10 @@ func (c *client) handleFrame(raw []byte) {
 	switch msg.Type {
 	case protocol.EventDaemonHeartbeat:
 		c.handleHeartbeatFrame(msg.Payload)
+	case protocol.EventTerminalStdout, protocol.EventTerminalExit, protocol.EventTerminalError:
+		if fn := c.hub.terminalFrameHandler(); fn != nil {
+			fn(msg.Type, msg.Payload)
+		}
 	default:
 		// Unknown app messages are intentionally ignored for forward
 		// compatibility with future daemon → server message types.

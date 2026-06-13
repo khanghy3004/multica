@@ -1,0 +1,16 @@
+{
+  "title": "终端",
+  "description": "在已连接的机器上打开交互式 Claude Code 会话。",
+  "pick_machine": "选择机器",
+  "no_machines": "没有在线的机器。请在你的机器上启动 Multica 守护进程以连接。",
+  "connecting": "正在连接…",
+  "connected": "已连接",
+  "disconnected": "已断开",
+  "reconnect": "重新连接",
+  "session_ended": "会话已结束。",
+  "online": "在线",
+  "offline": "离线",
+  "unsupported": "你的浏览器不支持终端。",
+  "enter_fullscreen": "全屏",
+  "exit_fullscreen": "退出全屏"
+}

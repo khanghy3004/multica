@@ -228,3 +228,67 @@ type DaemonHeartbeatPendingSubagentDelete struct {
 	ID   string `json:"id"`
 	Path string `json:"path"`
 }
+
+// --- Terminal relay payloads ---------------------------------------------
+//
+// SessionID is minted server-side when a browser opens a terminal and scopes
+// every subsequent frame so one daemon WS connection can multiplex several
+// terminals. Output bytes ride as base64 in Data to stay binary-safe through
+// the JSON envelope (control sequences, partial UTF-8 runes).
+
+// TerminalOpenPayload (server → daemon) asks the daemon to spawn the
+// interactive `claude` CLI in a fresh PTY for SessionID.
+//
+// The PTY is HARD-CONFINED to the daemon's per-workspace folder
+// (WorkspacesRoot/<workspace_id>): the client supplies only the workspace_id
+// and the daemon builds the path itself. There is intentionally no free-form
+// cwd or provider field — the terminal always runs `claude`, always inside the
+// workspace folder, and the client cannot point it anywhere else.
+type TerminalOpenPayload struct {
+	SessionID   string `json:"session_id"`
+	WorkspaceID string `json:"workspace_id"`
+	// UserID is the human who opened the terminal. The daemon tags the
+	// session's token usage with it so the Usage page can attribute terminal
+	// spend per user.
+	UserID string `json:"user_id"`
+	Cols   uint16 `json:"cols"`
+	Rows   uint16 `json:"rows"`
+}
+
+// TerminalStdinPayload (server → daemon) forwards browser keystrokes.
+type TerminalStdinPayload struct {
+	SessionID string `json:"session_id"`
+	Data      string `json:"data"` // base64-encoded input bytes
+}
+
+// TerminalResizePayload (server → daemon) updates the PTY window size.
+type TerminalResizePayload struct {
+	SessionID string `json:"session_id"`
+	Cols      uint16 `json:"cols"`
+	Rows      uint16 `json:"rows"`
+}
+
+// TerminalClosePayload (server → daemon) tears a PTY down (browser closed the
+// tab or the session was revoked).
+type TerminalClosePayload struct {
+	SessionID string `json:"session_id"`
+}
+
+// TerminalStdoutPayload (daemon → server) carries a chunk of PTY output.
+type TerminalStdoutPayload struct {
+	SessionID string `json:"session_id"`
+	Data      string `json:"data"` // base64-encoded output bytes
+}
+
+// TerminalExitPayload (daemon → server) reports the process exited.
+type TerminalExitPayload struct {
+	SessionID string `json:"session_id"`
+	Code      int    `json:"code"`
+}
+
+// TerminalErrorPayload (daemon → server) reports a spawn or IO failure so the
+// browser can surface it before the session closes.
+type TerminalErrorPayload struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}

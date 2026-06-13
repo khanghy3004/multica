@@ -155,6 +155,14 @@ func firstForwardedHost(h string) string {
 	return strings.TrimSpace(h)
 }
 
+// CheckOrigin exposes the WebSocket origin policy (same-origin + the
+// env-configured allowlist + trusted-proxy X-Forwarded-Host) to other
+// browser-facing WS endpoints (e.g. the terminal relay) so they share one
+// origin whitelist instead of reimplementing it.
+func CheckOrigin(r *http.Request) bool {
+	return checkOrigin(r)
+}
+
 func checkOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {

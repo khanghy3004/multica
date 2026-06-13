@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Crown, Shield, User, Plus, MoreHorizontal, UserMinus, Users, Clock, X, Mail } from "lucide-react";
+import { Crown, Shield, User, Plus, MoreHorizontal, UserMinus, Users, Clock, X, Mail, SquareTerminal } from "lucide-react";
 import { ActorAvatar } from "../../common/actor-avatar";
 import type { MemberWithUser, MemberRole, Invitation } from "@multica/core/types";
 import { Input } from "@multica/ui/components/ui/input";
@@ -48,6 +48,7 @@ const ROLE_ICONS: Record<MemberRole, typeof Crown> = {
   owner: Crown,
   admin: Shield,
   member: User,
+  terminal: SquareTerminal,
 };
 
 function useRoleLabels() {
@@ -67,6 +68,11 @@ function useRoleLabels() {
       label: t(($) => $.members.roles.member.label),
       description: t(($) => $.members.roles.member.description),
       icon: ROLE_ICONS.member,
+    },
+    terminal: {
+      label: t(($) => $.members.roles.terminal.label),
+      description: t(($) => $.members.roles.terminal.description),
+      icon: ROLE_ICONS.terminal,
     },
   } as const;
 }
@@ -362,6 +368,7 @@ export function MembersTab() {
                   <SelectContent>
                     <SelectItem value="member">{roleConfig.member.label}</SelectItem>
                     <SelectItem value="admin">{roleConfig.admin.label}</SelectItem>
+                    <SelectItem value="terminal">{roleConfig.terminal.label}</SelectItem>
                   </SelectContent>
                 </Select>
                 <Button

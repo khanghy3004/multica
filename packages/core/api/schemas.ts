@@ -330,6 +330,20 @@ const DashboardUsageByAgentSchema = z.object({
 
 export const DashboardUsageByAgentListSchema = z.array(DashboardUsageByAgentSchema);
 
+const DashboardTerminalUsageByUserSchema = z.object({
+  user_id: z.string().default(""),
+  name: z.string().default(""),
+  email: z.string().default(""),
+  input_tokens: z.number().default(0),
+  output_tokens: z.number().default(0),
+  cache_read_tokens: z.number().default(0),
+  cache_write_tokens: z.number().default(0),
+  total_tokens: z.number().default(0),
+  session_count: z.number().default(0),
+}).loose();
+
+export const DashboardTerminalUsageByUserListSchema = z.array(DashboardTerminalUsageByUserSchema);
+
 const DashboardAgentRunTimeSchema = z.object({
   agent_id: z.string().default(""),
   total_seconds: z.number().default(0),

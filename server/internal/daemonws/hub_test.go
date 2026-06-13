@@ -391,3 +391,107 @@ func (p *localFirstDaemonRelayPublisher) PublishWithID(scopeType, scopeID, exclu
 	}
 	return nil
 }
+
+// TestSendToRuntimeAndTerminalRelay covers the browser↔daemon terminal path:
+// the hub must (1) deliver a server-originated frame to the connection serving
+// a runtime_id, (2) route an inbound terminal:* frame back through the
+// TerminalFrameHandler keyed on session_id, and (3) fire the per-runtime
+// disconnect handler when the connection drops.
+func TestSendToRuntimeAndTerminalRelay(t *testing.T) {
+	M.Reset()
+	defer M.Reset()
+
+	hub := NewHub()
+
+	type relayed struct {
+		msgType   string
+		sessionID string
+	}
+	relayCh := make(chan relayed, 1)
+	goneCh := make(chan string, 1)
+	hub.SetTerminalHandlers(
+		func(msgType string, payload json.RawMessage) {
+			var head struct {
+				SessionID string `json:"session_id"`
+			}
+			_ = json.Unmarshal(payload, &head)
+			relayCh <- relayed{msgType: msgType, sessionID: head.SessionID}
+		},
+		func(runtimeID string) { goneCh <- runtimeID },
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hub.HandleWebSocket(w, r, ClientIdentity{
+			DaemonID:   "daemon-xyz",
+			RuntimeIDs: []string{"runtime-1"},
+		})
+	}))
+	defer server.Close()
+
+	wsURL := "ws" + strings.TrimPrefix(server.URL, "http")
+	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	defer conn.Close()
+
+	// Wait for the hub to register the connection under its runtime_id.
+	deadline := time.Now().Add(time.Second)
+	for !hub.RuntimeConnected("runtime-1") {
+		if time.Now().After(deadline) {
+			t.Fatal("runtime never registered")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	// (1) Server → daemon: SendToRuntime must reach this connection.
+	openFrame, _ := json.Marshal(protocol.Message{
+		Type:    protocol.EventTerminalOpen,
+		Payload: mustMarshalRaw(protocol.TerminalOpenPayload{SessionID: "sess-1", Cols: 80, Rows: 24}),
+	})
+	if !hub.SendToRuntime("runtime-1", openFrame) {
+		t.Fatal("SendToRuntime returned false for a connected runtime")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline: %v", err)
+	}
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("ReadMessage: %v", err)
+	}
+	var got protocol.Message
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("unmarshal open frame: %v", err)
+	}
+	if got.Type != protocol.EventTerminalOpen {
+		t.Fatalf("frame type = %q, want %q", got.Type, protocol.EventTerminalOpen)
+	}
+
+	// (2) Daemon → server: a terminal:stdout frame must hit the relay handler.
+	stdoutFrame, _ := json.Marshal(protocol.Message{
+		Type:    protocol.EventTerminalStdout,
+		Payload: mustMarshalRaw(protocol.TerminalStdoutPayload{SessionID: "sess-1", Data: "aGk="}),
+	})
+	if err := conn.WriteMessage(websocket.TextMessage, stdoutFrame); err != nil {
+		t.Fatalf("WriteMessage stdout: %v", err)
+	}
+	select {
+	case r := <-relayCh:
+		if r.msgType != protocol.EventTerminalStdout || r.sessionID != "sess-1" {
+			t.Fatalf("relayed = %+v, want terminal:stdout/sess-1", r)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("terminal frame was not relayed")
+	}
+
+	// (3) Disconnect must fire the gone handler for the runtime.
+	conn.Close()
+	select {
+	case rid := <-goneCh:
+		if rid != "runtime-1" {
+			t.Fatalf("gone runtime = %q, want runtime-1", rid)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("runtime-gone handler did not fire on disconnect")
+	}
+}

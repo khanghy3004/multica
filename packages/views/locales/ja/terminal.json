@@ -1,0 +1,16 @@
+{
+  "title": "ターミナル",
+  "description": "接続済みのマシンで対話型の Claude Code セッションを開きます。",
+  "pick_machine": "マシンを選択",
+  "no_machines": "オンラインのマシンがありません。接続するにはマシンで Multica デーモンを起動してください。",
+  "connecting": "接続中…",
+  "connected": "接続済み",
+  "disconnected": "切断されました",
+  "reconnect": "再接続",
+  "session_ended": "セッションが終了しました。",
+  "online": "オンライン",
+  "offline": "オフライン",
+  "unsupported": "お使いのブラウザはターミナルに対応していません。",
+  "enter_fullscreen": "全画面",
+  "exit_fullscreen": "全画面を終了"
+}

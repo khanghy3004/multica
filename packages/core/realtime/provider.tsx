@@ -26,6 +26,13 @@ type EventHandler = (payload: unknown, actorId?: string, actorType?: string) => 
 interface WSContextValue {
   subscribe: (event: WSEventType, handler: EventHandler) => () => void;
   onReconnect: (callback: () => void) => () => void;
+  /**
+   * The configured realtime WebSocket URL (e.g. "ws://localhost:8080/ws" or,
+   * on web, the same-origin proxied "wss://host/ws"). Other browser WS
+   * features (the terminal relay) derive their own endpoint from this so they
+   * inherit the same origin + proxy as the event hub.
+   */
+  wsUrl: string;
 }
 
 const WSContext = createContext<WSContextValue | null>(null);
@@ -137,7 +144,7 @@ export function WSProvider({
   );
 
   return (
-    <WSContext.Provider value={{ subscribe, onReconnect: onReconnectCb }}>
+    <WSContext.Provider value={{ subscribe, onReconnect: onReconnectCb, wsUrl }}>
       {children}
     </WSContext.Provider>
   );

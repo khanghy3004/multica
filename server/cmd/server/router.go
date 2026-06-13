@@ -407,6 +407,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Wire WS heartbeat after stores are finalized so the WS path uses the
 	// same (possibly Redis-backed) stores as the HTTP path.
 	daemonHub.SetHeartbeatHandler(h.HandleDaemonWSHeartbeat)
+
+	// Wire the browser↔daemon terminal relay: the bridge routes daemon
+	// terminal:* frames to browser sessions and cleans up on daemon drop.
+	terminalBridge := handler.NewTerminalBridge()
+	h.TerminalBridge = terminalBridge
+	daemonHub.SetTerminalHandlers(terminalBridge.OnFrame, terminalBridge.OnRuntimeGone)
+
 	health := newServerHealth(pool)
 
 	r := chi.NewRouter()
@@ -531,6 +538,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
+		r.Post("/terminal-usage", h.ReportTerminalUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
 		r.Get("/tasks/{taskId}/messages", h.ListTaskMessages)
 
@@ -570,11 +578,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/", h.ListWorkspaces)
 			r.Post("/", h.CreateWorkspace)
 			r.Route("/{id}", func(r chi.Router) {
+				// Terminal-allowed reads: workspace info + member list +
+				// connectable machines. The terminal-only role needs exactly
+				// these to resolve the workspace slug, learn its own role, and
+				// pick a machine — so they admit "terminal" alongside the
+				// normal member roles. Everything else stays terminal-denied.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin", "member", middleware.RoleTerminal))
+					r.Get("/", h.GetWorkspace)
+					r.Get("/members", h.ListMembersWithUser)
+					r.Get("/terminal/machines", h.ListAgentRuntimes)
+				})
 				// Member-level access
 				r.Group(func(r chi.Router) {
 					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
-					r.Get("/", h.GetWorkspace)
-					r.Get("/members", h.ListMembersWithUser)
 					r.Post("/leave", h.LeaveWorkspace)
 					r.Get("/invitations", h.ListWorkspaceInvitations)
 					// Listing GitHub installations is member-visible so the
@@ -597,6 +614,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 				// Owner-only access
 				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner")).Delete("/", h.DeleteWorkspace)
+
+				// Interactive terminal relay to a daemon in this workspace.
+				// Owner/admin grant an interactive CLI shell on the daemon
+				// machine; the terminal-only role is admitted here (and only
+				// here, plus the bootstrap reads above). Cookie auth on the
+				// upgrade GET (CSRF-exempt).
+				r.With(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin", middleware.RoleTerminal)).
+					Get("/terminal/ws", h.TerminalWebSocket)
 
 				// GitHub integration — connect / disconnect remain admin-only;
 				// the read-only list endpoint lives in the member-level group
@@ -891,6 +916,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/dashboard", func(r chi.Router) {
 				r.Get("/usage/daily", h.GetDashboardUsageDaily)
 				r.Get("/usage/by-agent", h.GetDashboardUsageByAgent)
+				r.Get("/usage/terminal-by-user", h.GetDashboardTerminalUsageByUser)
 				r.Get("/agent-runtime", h.GetDashboardAgentRunTime)
 				r.Get("/runtime/daily", h.GetDashboardRunTimeDaily)
 			})

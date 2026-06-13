@@ -374,6 +374,10 @@
       "member": {
         "label": "成员",
         "description": "创建并处理 issue"
+      },
+      "terminal": {
+        "label": "终端",
+        "description": "仅可使用网页终端 — 无其他访问权限"
       }
     }
   }

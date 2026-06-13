@@ -54,5 +54,13 @@
   },
   "duration": {
     "less_than_minute": "1분 미만"
+  },
+  "terminal_usage": {
+    "title": "터미널 사용량",
+    "caption": "{{count}}명 · {{days}}일",
+    "no_data": "아직 터미널 사용량이 없습니다",
+    "header_user": "사용자",
+    "header_tokens": "토큰",
+    "header_sessions": "세션"
   }
 }

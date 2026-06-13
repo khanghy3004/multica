@@ -118,6 +118,19 @@ const (
 	EventDaemonRegister      = "daemon:register"
 	EventDaemonTaskAvailable = "daemon:task_available"
 
+	// Terminal events (browser ↔ server ↔ daemon). The server relays an
+	// interactive PTY between a browser tab and a daemon: open/stdin/resize/
+	// close flow server → daemon; stdout/exit/error flow daemon → server. All
+	// carry a server-minted session_id so a single daemon connection can host
+	// multiple concurrent terminals.
+	EventTerminalOpen   = "terminal:open"   // server → daemon: spawn the interactive CLI in a PTY
+	EventTerminalStdin  = "terminal:stdin"  // server → daemon: forward keystrokes
+	EventTerminalResize = "terminal:resize" // server → daemon: window size changed
+	EventTerminalClose  = "terminal:close"  // server → daemon: tear the PTY down
+	EventTerminalStdout = "terminal:stdout" // daemon → server: PTY output chunk
+	EventTerminalExit   = "terminal:exit"   // daemon → server: process exited
+	EventTerminalError  = "terminal:error"  // daemon → server: spawn / IO failure
+
 	// GitHub integration events
 	EventGitHubInstallationCreated = "github_installation:created"
 	EventGitHubInstallationDeleted = "github_installation:deleted"

@@ -54,5 +54,13 @@
   },
   "duration": {
     "less_than_minute": "<1m"
+  },
+  "terminal_usage": {
+    "title": "Terminal usage",
+    "caption": "{{count}} users · {{days}}d",
+    "no_data": "No terminal usage yet",
+    "header_user": "User",
+    "header_tokens": "Tokens",
+    "header_sessions": "Sessions"
   }
 }

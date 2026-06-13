@@ -27,6 +27,8 @@ export const dashboardKeys = {
     projectId: string | null,
     tz: string,
   ) => [...dashboardKeys.all(wsId), "runtime-daily", days, projectId, tz] as const,
+  terminalByUser: (wsId: string, days: number, tz: string) =>
+    [...dashboardKeys.all(wsId), "terminal-by-user", days, tz] as const,
 };
 
 // 5-min rollup cadence on the server, 60s background refetch on the client.
@@ -88,6 +90,21 @@ export function dashboardAgentRunTimeOptions(
         project_id: projectId ?? undefined,
         tz,
       }),
+    enabled: !!wsId,
+    staleTime: STALE_TIME,
+  });
+}
+
+// Terminal usage is per-user and not project-scoped (a terminal session
+// belongs to a person, not a project), so this option takes no projectId.
+export function dashboardTerminalUsageByUserOptions(
+  wsId: string,
+  days: number,
+  tz: string,
+) {
+  return queryOptions({
+    queryKey: dashboardKeys.terminalByUser(wsId, days, tz),
+    queryFn: () => api.getDashboardTerminalUsageByUser({ days, tz }),
     enabled: !!wsId,
     staleTime: STALE_TIME,
   });

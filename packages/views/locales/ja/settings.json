@@ -374,6 +374,10 @@
       "member": {
         "label": "メンバー",
         "description": "イシューの作成と作業"
+      },
+      "terminal": {
+        "label": "ターミナル",
+        "description": "Web ターミナルのみ — 他のアクセス不可"
       }
     }
   }

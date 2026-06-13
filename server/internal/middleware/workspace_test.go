@@ -189,3 +189,101 @@ func TestResolveWorkspaceIDFromRequest(t *testing.T) {
 		})
 	}
 }
+
+// setupMemberFixture inserts a user + member with the given role into the
+// resolver-test workspace and returns the user UUID + cleanup.
+func setupMemberFixture(t *testing.T, pool *pgxpool.Pool, workspaceID, role string) (userID string, cleanup func()) {
+	t.Helper()
+	ctx := context.Background()
+	email := "mw-" + role + "@example.test"
+	_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, email)
+	if err := pool.QueryRow(ctx,
+		`INSERT INTO "user" (name, email) VALUES ($1, $2) RETURNING id`,
+		"MW "+role, email,
+	).Scan(&userID); err != nil {
+		t.Fatalf("insert user: %v", err)
+	}
+	if _, err := pool.Exec(ctx,
+		`INSERT INTO member (workspace_id, user_id, role) VALUES ($1, $2, $3)`,
+		workspaceID, userID, role,
+	); err != nil {
+		t.Fatalf("insert member (role=%s): %v", role, err)
+	}
+	return userID, func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, email)
+	}
+}
+
+// TestTerminalRoleDenyByDefault pins the hard enforcement: a member whose role
+// is "terminal" passes a workspace middleware ONLY when "terminal" is in the
+// explicit allowed-roles list. Every other role keeps its existing behaviour.
+func TestTerminalRoleDenyByDefault(t *testing.T) {
+	pool := openPool(t)
+	defer pool.Close()
+	queries := db.New(pool)
+
+	workspaceID, cleanup := setupResolverFixture(t, pool)
+	defer cleanup()
+
+	terminalUser, cleanupT := setupMemberFixture(t, pool, workspaceID, "terminal")
+	defer cleanupT()
+	memberUser, cleanupM := setupMemberFixture(t, pool, workspaceID, "member")
+	defer cleanupM()
+
+	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	cases := []struct {
+		name   string
+		mw     func(http.Handler) http.Handler
+		userID string
+		want   int
+	}{
+		{
+			name:   "terminal role denied by RequireWorkspaceMember (no roles)",
+			mw:     RequireWorkspaceMember(queries),
+			userID: terminalUser,
+			want:   http.StatusForbidden,
+		},
+		{
+			name:   "terminal role denied by owner/admin role check",
+			mw:     RequireWorkspaceRole(queries, "owner", "admin"),
+			userID: terminalUser,
+			want:   http.StatusForbidden,
+		},
+		{
+			name:   "terminal role admitted when explicitly listed",
+			mw:     RequireWorkspaceRole(queries, "owner", "admin", "member", RoleTerminal),
+			userID: terminalUser,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "member role still passes RequireWorkspaceMember",
+			mw:     RequireWorkspaceMember(queries),
+			userID: memberUser,
+			want:   http.StatusOK,
+		},
+		{
+			name:   "member role denied by owner/admin role check",
+			mw:     RequireWorkspaceRole(queries, "owner", "admin"),
+			userID: memberUser,
+			want:   http.StatusForbidden,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest("GET", "/api/anything", nil)
+			req.Header.Set("X-Workspace-ID", workspaceID)
+			req.Header.Set("X-User-ID", tc.userID)
+			rec := httptest.NewRecorder()
+
+			tc.mw(ok).ServeHTTP(rec, req)
+
+			if rec.Code != tc.want {
+				t.Fatalf("expected status %d, got %d (body=%s)", tc.want, rec.Code, rec.Body.String())
+			}
+		})
+	}
+}

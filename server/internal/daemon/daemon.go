@@ -161,6 +161,11 @@ type Daemon struct {
 	// New() and overridable in tests so the auto-update poller can be exercised
 	// without touching the real network or the brew CLI.
 	runUpdateFn func(targetVersion string) (string, error)
+
+	// terminals hosts interactive PTY sessions relayed from browser tabs over
+	// the WS task-wakeup connection. nil-safe: opens fail fast while the WS is
+	// detached.
+	terminals *terminalManager
 }
 
 // New creates a new Daemon instance.
@@ -189,6 +194,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	}
 	d.runner = taskRunnerFunc(d.runTask)
 	d.runUpdateFn = d.runUpdate
+	d.terminals = newTerminalManager(d)
 	return d
 }
 

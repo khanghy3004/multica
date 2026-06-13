@@ -13,6 +13,8 @@ export const runtimeKeys = {
   usageByHour: (rid: string, days: number, tz: string) =>
     ["runtimes", "usage", "by-hour", rid, days, tz] as const,
   latestVersion: () => ["runtimes", "latestVersion"] as const,
+  terminalMachines: (wsId: string) =>
+    ["runtimes", wsId, "terminal-machines"] as const,
 };
 
 // `tz` is the viewer's IANA name — all reports follow the viewer's tz.
@@ -52,6 +54,16 @@ export function runtimeListOptions(wsId: string, owner?: "me") {
   return queryOptions({
     queryKey: owner === "me" ? runtimeKeys.listMine(wsId) : runtimeKeys.list(wsId),
     queryFn: () => api.listRuntimes({ workspace_id: wsId, owner }),
+  });
+}
+
+// Machines connectable from the web terminal. Uses the workspace-scoped
+// endpoint that the terminal-only role is allowed to reach (see
+// api.listTerminalMachines).
+export function terminalMachineListOptions(wsId: string) {
+  return queryOptions({
+    queryKey: runtimeKeys.terminalMachines(wsId),
+    queryFn: () => api.listTerminalMachines(wsId),
   });
 }
 
